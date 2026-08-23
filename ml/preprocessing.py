@@ -1,8 +1,14 @@
 """
 SysSense AI — Data Preprocessing Module
 
-Loads raw metrics from SQLite, engineers features, and prepares
-train/test splits for ML model training.
+Loads data from the Kaggle IT System Performance & Resource Metrics dataset
+or the local SQLite database, engineers features, and prepares train/test
+splits for ML model training.
+
+The PUBLIC DATASET approach (default):
+    The model is trained ONCE on the Kaggle dataset.
+    During demonstrations, the application collects live metrics using psutil
+    and uses the trained model for predictions.
 
 Features engineered:
     - Current CPU, RAM, Disk
@@ -10,10 +16,11 @@ Features engineered:
     - Moving averages (5-point, 10-point)
     - Rate of change (delta between consecutive readings)
     - Hour of day, minute of hour
-    - Network activity rates
+    - Network latency, context switches, temperature
+    - Cache miss rate, power consumption
 
 Labels:
-    - CPU value ~30 seconds later (~7-8 rows ahead at 4s intervals)
+    - CPU value ~30 seconds later (~7-8 rows ahead at 5s intervals)
     - RAM value ~30 seconds later
 """
 import os
@@ -24,32 +31,99 @@ from datetime import datetime
 
 # Allow importing database.py from sibling directory
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
-from database import get_all_metrics_for_training
+
+# Path to the public dataset CSV
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+PUBLIC_DATASET_PATH = os.path.join(DATA_DIR, "system_metrics_dataset.csv")
+KAGGLE_DATASET_PATH = os.path.join(DATA_DIR, "Big_data_dataset.csv")
+
+
+def load_public_dataset():
+    """
+    Load the Kaggle IT System Performance & Resource Metrics dataset.
+
+    Tries the mapped CSV first (system_metrics_dataset.csv), falls back
+    to loading and mapping the raw Kaggle CSV (Big_data_dataset.csv).
+
+    Returns:
+        pandas DataFrame or None if no dataset exists.
+    """
+    # Try pre-processed mapped file first
+    if os.path.exists(PUBLIC_DATASET_PATH):
+        df = pd.read_csv(PUBLIC_DATASET_PATH)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.sort_values("id").reset_index(drop=True)
+        print(f"Loaded {len(df)} rows from mapped Kaggle dataset")
+        print(f"  Time range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+        return df
+
+    # Fall back to raw Kaggle CSV and map on-the-fly
+    if os.path.exists(KAGGLE_DATASET_PATH):
+        print("Mapped dataset not found. Loading raw Kaggle CSV...")
+        from generate_dataset import generate_dataset
+        df = generate_dataset()
+        if df is not None:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df = df.sort_values("id").reset_index(drop=True)
+            return df
+
+    print(f"No dataset found. Please either:")
+    print(f"  1. Place Big_data_dataset.csv in {DATA_DIR}")
+    print(f"  2. Run 'python generate_dataset.py' to process it")
+    return None
 
 
 def load_raw_data():
-    """Load all metrics from SQLite into a pandas DataFrame."""
-    data = get_all_metrics_for_training()
-    if not data:
-        print("No data found in database. Run collector.py first!")
+    """
+    Load all metrics from the local SQLite database into a DataFrame.
+
+    This is a FALLBACK option. The primary approach is load_public_dataset().
+    This function is kept for compatibility and for cases where you want
+    to train on locally collected data instead.
+    """
+    try:
+        from database import get_all_metrics_for_training
+        data = get_all_metrics_for_training()
+        if not data:
+            print("No data found in local database.")
+            return None
+
+        df = pd.DataFrame(data)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.sort_values("id").reset_index(drop=True)
+        print(f"Loaded {len(df)} rows from local SQLite database")
+        print(f"  Time range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+        return df
+    except Exception as e:
+        print(f"Could not load from local database: {e}")
         return None
 
-    df = pd.DataFrame(data)
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df = df.sort_values("id").reset_index(drop=True)
-    print(f"Loaded {len(df)} rows spanning "
-          f"{df['timestamp'].min()} to {df['timestamp'].max()}")
-    return df
+
+def load_data(prefer_public=True):
+    """
+    Smart loader: tries the public dataset first, falls back to local DB.
+
+    Args:
+        prefer_public: If True (default), use the public dataset.
+                       If False, use the local SQLite database.
+    """
+    if prefer_public:
+        df = load_public_dataset()
+        if df is not None:
+            return df
+        print("Falling back to local database...")
+
+    return load_raw_data()
 
 
-def engineer_features(df, prediction_horizon=8):
+def engineer_features(df, prediction_horizon=6):
     """
     Engineer features from raw metrics.
 
     Args:
         df: Raw metrics DataFrame
         prediction_horizon: Number of rows ahead to predict
-                            (8 rows × ~4s = ~32 seconds ahead)
+                            (6 rows x ~5s = ~30 seconds ahead)
 
     Returns:
         DataFrame with features and labels, ready for training.
@@ -81,10 +155,27 @@ def engineer_features(df, prediction_horizon=8):
     feat["cpu_std5"] = df["cpu_percent"].rolling(5).std()
     feat["ram_std5"] = df["ram_percent"].rolling(5).std()
 
-    # ── Network rates ─────────────────────────────────────────────────
-    if "net_sent_mb" in df.columns:
+    # ── Network features ──────────────────────────────────────────────
+    if "net_sent_mb" in df.columns and "net_recv_mb" in df.columns:
         feat["net_sent_rate"] = df["net_sent_mb"].diff().fillna(0).clip(lower=0)
         feat["net_recv_rate"] = df["net_recv_mb"].diff().fillna(0).clip(lower=0)
+
+    # Network latency (from Kaggle dataset)
+    if "network_latency_ms" in df.columns:
+        feat["network_latency"] = df["network_latency_ms"]
+
+    # ── Extra features from Kaggle dataset ────────────────────────────
+    if "context_switches" in df.columns:
+        feat["context_switches"] = df["context_switches"]
+
+    if "cache_miss_rate" in df.columns:
+        feat["cache_miss_rate"] = df["cache_miss_rate"]
+
+    if "temperature" in df.columns:
+        feat["temperature"] = df["temperature"]
+
+    if "power_consumption" in df.columns:
+        feat["power_consumption"] = df["power_consumption"]
 
     # ── Time features ─────────────────────────────────────────────────
     feat["hour"] = df["timestamp"].dt.hour
@@ -129,8 +220,8 @@ def prepare_train_test(df, test_ratio=0.2):
 
 
 if __name__ == "__main__":
-    print("=== SysSense AI — Preprocessing ===\n")
-    df = load_raw_data()
+    print("=== SysSense AI -- Preprocessing ===\n")
+    df = load_data(prefer_public=True)
     if df is not None:
         feat = engineer_features(df)
         print(f"\nFeature columns: {list(feat.columns)}")
