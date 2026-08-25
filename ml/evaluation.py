@@ -46,14 +46,14 @@ def compare_with_baseline(model, X_test, y_test, naive_predictions, label=""):
     ml_r2 = r2_score(y_test, ml_pred)
     naive_r2 = r2_score(y_test, naive_predictions)
 
-    print(f"\n{'─' * 50}")
-    print(f"{label} — ML vs Naive Baseline Comparison")
-    print(f"{'─' * 50}")
+    print(f"\n{'-' * 50}")
+    print(f"{label} -- ML vs Naive Baseline Comparison")
+    print(f"{'-' * 50}")
     print(f"  {'Metric':<10} {'ML Model':>12} {'Naive':>12} {'Improvement':>14}")
-    print(f"  {'─'*48}")
+    print(f"  {'-'*48}")
     print(f"  {'MAE':<10} {ml_mae:>12.4f} {naive_mae:>12.4f} {improvement:>13.1f}%")
     print(f"  {'RMSE':<10} {ml_rmse:>12.4f} {naive_rmse:>12.4f}")
-    print(f"  {'R²':<10} {ml_r2:>12.4f} {naive_r2:>12.4f}")
+    print(f"  {'R2':<10} {ml_r2:>12.4f} {naive_r2:>12.4f}")
 
     return {
         "ml_mae": ml_mae,
@@ -126,4 +126,4 @@ def generate_report(cpu_metrics, ram_metrics, cpu_comparison, ram_comparison,
     with open(report_path, "w") as f:
         f.write(report)
 
-    print(f"\n✓ Evaluation report saved to {report_path}")
+    print(f"\n[OK] Evaluation report saved to {report_path}")
