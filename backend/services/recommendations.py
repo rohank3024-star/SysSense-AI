@@ -25,7 +25,9 @@ def _get_top_consumers(sort_by="cpu", top_n=5):
 
 
 def generate_recommendations(cpu: float, ram: float, disk: float,
-                             feature_importances: dict = None) -> list:
+                             feature_importances: dict = None,
+                             anomaly_data: dict = None,
+                             process_anomalies: list = None) -> list:
     """
     Generate actionable recommendations based on current system state.
 
@@ -137,6 +139,32 @@ def generate_recommendations(cpu: float, ram: float, disk: float,
                 "icon": "ai",
             })
 
+    # ── Anomaly-Driven Recommendations ────────────────────────────────
+    if anomaly_data and anomaly_data.get("is_anomaly"):
+        severity = anomaly_data.get("severity", "mild")
+        details = anomaly_data.get("details", [])
+        detail_text = "; ".join(details) if details else "Unusual system behavior detected."
+        recs.append({
+            "priority": "critical" if severity == "critical" else "warning",
+            "category": "Anomaly Detection",
+            "message": f"ML anomaly detected ({severity} severity)",
+            "detail": f"{detail_text} Consider investigating running processes and "
+                      f"closing unnecessary applications.",
+            "icon": "anomaly",
+        })
+
+    # ── Process-specific anomaly recommendations ──────────────────────
+    if process_anomalies:
+        for pa in process_anomalies[:3]:  # limit to top 3
+            recs.append({
+                "priority": pa.get("severity", "warning"),
+                "category": "Process Anomaly",
+                "message": pa.get("message", "Process consuming excessive resources"),
+                "detail": f"Consider closing {pa.get('process', 'this process')} "
+                          f"or reducing its workload.",
+                "icon": "process",
+            })
+
     # ── All-clear ─────────────────────────────────────────────────────
     if not recs:
         recs.append({
@@ -148,3 +176,4 @@ def generate_recommendations(cpu: float, ram: float, disk: float,
         })
 
     return recs
+

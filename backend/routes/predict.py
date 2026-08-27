@@ -1,8 +1,14 @@
 """
 Prediction endpoints for SysSense AI.
 
-Starts with a naive baseline (predict next = current).
-After ML training, this loads the trained model and returns real predictions.
+Uses ML models trained on a PUBLIC DATASET for predictions.
+Current system metrics (collected via psutil) are passed to the
+trained model for live predictions.
+
+Includes:
+    - CPU/RAM prediction 30 seconds ahead
+    - Anomaly detection using Isolation Forest
+    - Per-process anomaly warnings
 """
 from fastapi import APIRouter
 import psutil
@@ -14,15 +20,20 @@ router = APIRouter(tags=["Prediction"])
 DISK_PATH = "C:\\" if platform.system() == "Windows" else "/"
 
 # Path to trained model files
-ML_MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ml", "models")
+ML_MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "ml", "models")
 
 # Try to load trained models at import time
 _cpu_model = None
 _ram_model = None
+_anomaly_model = None
+_anomaly_feature_names = None
 _model_loaded = False
+_anomaly_loaded = False
+
 
 def _try_load_models():
     global _cpu_model, _ram_model, _model_loaded
+    global _anomaly_model, _anomaly_feature_names, _anomaly_loaded
     try:
         import joblib
         cpu_path = os.path.join(ML_MODELS_DIR, "cpu_model.pkl")
@@ -38,6 +49,22 @@ def _try_load_models():
         print("[INFO] joblib not installed - using naive baseline")
     except Exception as e:
         print(f"[WARN] Failed to load ML models: {e} - using naive baseline")
+
+    # Load anomaly detection model
+    try:
+        import joblib
+        anomaly_path = os.path.join(ML_MODELS_DIR, "anomaly_model.pkl")
+        anomaly_meta_path = os.path.join(ML_MODELS_DIR, "anomaly_metadata.pkl")
+        if os.path.exists(anomaly_path) and os.path.exists(anomaly_meta_path):
+            _anomaly_model = joblib.load(anomaly_path)
+            meta = joblib.load(anomaly_meta_path)
+            _anomaly_feature_names = meta.get("feature_names", [])
+            _anomaly_loaded = True
+            print(f"[OK] Anomaly detection model loaded")
+        else:
+            print(f"[INFO] Anomaly model not found - anomaly detection disabled")
+    except Exception as e:
+        print(f"[WARN] Failed to load anomaly model: {e}")
 
 _try_load_models()
 
@@ -73,16 +100,118 @@ def _build_feature_row():
         "disk_current": latest.get("disk_percent", 0),
         "cpu_lag1": cpu_vals[-2] if len(cpu_vals) >= 2 else cpu_vals[-1],
         "cpu_lag3": cpu_vals[-4] if len(cpu_vals) >= 4 else cpu_vals[-1],
+        "cpu_lag5": cpu_vals[-6] if len(cpu_vals) >= 6 else cpu_vals[-1],
         "ram_lag1": ram_vals[-2] if len(ram_vals) >= 2 else ram_vals[-1],
         "ram_lag3": ram_vals[-4] if len(ram_vals) >= 4 else ram_vals[-1],
+        "ram_lag5": ram_vals[-6] if len(ram_vals) >= 6 else ram_vals[-1],
         "cpu_ma5": float(np.mean(cpu_vals[-5:])) if len(cpu_vals) >= 5 else float(np.mean(cpu_vals)),
+        "cpu_ma10": float(np.mean(cpu_vals[-10:])) if len(cpu_vals) >= 10 else float(np.mean(cpu_vals)),
         "ram_ma5": float(np.mean(ram_vals[-5:])) if len(ram_vals) >= 5 else float(np.mean(ram_vals)),
+        "ram_ma10": float(np.mean(ram_vals[-10:])) if len(ram_vals) >= 10 else float(np.mean(ram_vals)),
         "cpu_delta": cpu_vals[-1] - cpu_vals[-2] if len(cpu_vals) >= 2 else 0,
         "ram_delta": ram_vals[-1] - ram_vals[-2] if len(ram_vals) >= 2 else 0,
+        "disk_delta": 0,
+        "cpu_std5": float(np.std(cpu_vals[-5:])) if len(cpu_vals) >= 5 else 0,
+        "ram_std5": float(np.std(ram_vals[-5:])) if len(ram_vals) >= 5 else 0,
+        "net_sent_rate": 0,
+        "net_recv_rate": 0,
         "hour": hour,
         "minute": minute,
     }
     return features
+
+
+def _get_anomaly_status(cpu, ram, disk):
+    """Run anomaly detection on current metrics."""
+    if not _anomaly_loaded or not _anomaly_model:
+        return None
+
+    import numpy as np
+
+    metrics = {
+        "cpu_percent": cpu,
+        "ram_percent": ram,
+        "disk_percent": disk,
+        "net_sent_rate": 0,
+        "net_recv_rate": 0,
+        "cpu_ram_product": cpu * ram / 100,
+        "cpu_delta": 0,
+        "ram_delta": 0,
+    }
+
+    X = np.array([[metrics.get(f, 0) for f in _anomaly_feature_names]])
+
+    try:
+        prediction = _anomaly_model.predict(X)[0]
+        score = _anomaly_model.score_samples(X)[0]
+
+        is_anomaly = prediction == -1
+        severity = "normal"
+        details = []
+
+        if is_anomaly:
+            if score < -0.3:
+                severity = "critical"
+            elif score < -0.2:
+                severity = "warning"
+            else:
+                severity = "mild"
+
+            if cpu > 80:
+                details.append(f"CPU unusually high ({cpu:.1f}%)")
+            if ram > 90:
+                details.append(f"RAM unusually high ({ram:.1f}%)")
+            if cpu > 70 and ram > 85:
+                details.append("Combined high CPU + RAM may indicate resource exhaustion")
+            if not details:
+                details.append("Unusual metric combination detected by ML model")
+
+        return {
+            "is_anomaly": bool(is_anomaly),
+            "anomaly_score": round(float(score), 4),
+            "severity": severity,
+            "details": details,
+        }
+    except Exception as e:
+        return {"is_anomaly": False, "error": str(e)}
+
+
+def _get_process_anomalies():
+    """Detect per-process anomalies (e.g., Chrome using high CPU)."""
+    anomalies = []
+    try:
+        for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
+            try:
+                info = p.info
+                cpu_pct = info.get("cpu_percent") or 0
+                mem_pct = info.get("memory_percent") or 0
+                name = info.get("name", "Unknown")
+
+                if cpu_pct > 50:
+                    anomalies.append({
+                        "process": name,
+                        "pid": info.get("pid", 0),
+                        "type": "high_cpu",
+                        "severity": "critical" if cpu_pct > 80 else "warning",
+                        "message": f"{name} is consuming unusually high CPU ({cpu_pct:.1f}%)",
+                        "value": round(cpu_pct, 1),
+                    })
+
+                if mem_pct > 20:
+                    anomalies.append({
+                        "process": name,
+                        "pid": info.get("pid", 0),
+                        "type": "high_memory",
+                        "severity": "critical" if mem_pct > 40 else "warning",
+                        "message": f"{name} is consuming unusually high memory ({mem_pct:.1f}%)",
+                        "value": round(mem_pct, 1),
+                    })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        pass
+
+    return anomalies
 
 
 @router.get("/predict")
@@ -90,9 +219,10 @@ def predict():
     """
     Returns predicted CPU and RAM usage 30 seconds ahead.
 
-    If trained ML models exist, uses them. Otherwise falls back to
-    the naive baseline (predicted = current). Keep both around —
-    the comparison is the key result for your report.
+    Uses ML models trained on a public dataset. If trained models exist,
+    uses them. Otherwise falls back to the naive baseline (predicted = current).
+
+    Also includes anomaly detection results and per-process anomaly warnings.
     """
     cpu = psutil.cpu_percent(interval=0)
     ram = psutil.virtual_memory().percent
@@ -107,6 +237,8 @@ def predict():
         "model_used": "naive_baseline",
         "confidence": None,
         "feature_importances": None,
+        "anomaly": None,
+        "process_anomalies": [],
     }
 
     if _model_loaded and _cpu_model and _ram_model:
@@ -141,6 +273,14 @@ def predict():
             except Exception as e:
                 result["ml_error"] = str(e)
 
+    # Anomaly detection
+    anomaly_result = _get_anomaly_status(cpu, ram, disk)
+    if anomaly_result:
+        result["anomaly"] = anomaly_result
+
+    # Per-process anomalies
+    result["process_anomalies"] = _get_process_anomalies()
+
     return result
 
 
@@ -148,4 +288,7 @@ def predict():
 def reload_models():
     """Force-reload ML models (after retraining)."""
     _try_load_models()
-    return {"model_loaded": _model_loaded}
+    return {
+        "model_loaded": _model_loaded,
+        "anomaly_loaded": _anomaly_loaded,
+    }
