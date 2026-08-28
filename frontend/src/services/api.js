@@ -36,9 +36,11 @@ export const getAlerts = () => api.get('/alerts');
 export const getAlertHistory = (limit = 50) =>
   api.get('/alerts/history', { params: { limit } });
 
-// ── Prediction ───────────────────────────────────────────────────────
+// ── Prediction & Anomaly Detection ───────────────────────────────────
 
 export const getPrediction = () => api.get('/predict');
+
+export const reloadModels = () => api.get('/predict/reload');
 
 // ── Health & Recommendations ─────────────────────────────────────────
 

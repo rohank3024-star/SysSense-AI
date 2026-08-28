@@ -162,6 +162,41 @@ export default function Prediction() {
         </div>
       )}
 
+      {/* ── Anomaly Detection Status ──────────────────────────── */}
+      {prediction?.anomaly && (
+        <div className="card animate-in animate-in-delay-2" style={{ marginBottom: '18px' }}>
+          <div className="chart-header">
+            <span className="chart-title">🛡️ Anomaly Detection</span>
+          </div>
+          <div className={`alert-card ${prediction.anomaly.is_anomaly ? (prediction.anomaly.severity === 'critical' ? 'critical' : 'warning') : 'info'}`}>
+            <span className="alert-icon">{prediction.anomaly.is_anomaly ? '🔴' : '🟢'}</span>
+            <div className="alert-content">
+              <h4>{prediction.anomaly.is_anomaly ? `Anomaly Detected (${prediction.anomaly.severity})` : 'No Anomaly Detected'}</h4>
+              <p>{prediction.anomaly.is_anomaly ? prediction.anomaly.details?.join('; ') : 'System behavior is within normal parameters'}</p>
+              <p style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
+                Anomaly Score: {prediction.anomaly.anomaly_score}
+              </p>
+            </div>
+          </div>
+          {prediction.process_anomalies?.length > 0 && (
+            <div style={{ marginTop: '12px' }}>
+              <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '8px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Process Anomalies
+              </div>
+              {prediction.process_anomalies.slice(0, 5).map((pa, i) => (
+                <div key={i} className={`alert-card ${pa.severity}`}>
+                  <span className="alert-icon">{pa.severity === 'critical' ? '🔴' : '🟡'}</span>
+                  <div className="alert-content">
+                    <h4>{pa.message}</h4>
+                    <p>PID: {pa.pid}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="card animate-in animate-in-delay-3">
         <LiveChart data={history} title="Recent Trends (used for prediction)" height={280} />
       </div>

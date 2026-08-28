@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { getAlerts, getAlertHistory, getRecommendations } from '../services/api';
+import { getAlerts, getAlertHistory, getRecommendations, getPrediction } from '../services/api';
 
 export default function Alerts() {
   const [alerts, setAlerts] = useState({ alerts: [], current: {} });
   const [history, setHistory] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
+  const [anomaly, setAnomaly] = useState(null);
+  const [processAnomalies, setProcessAnomalies] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
@@ -29,6 +31,15 @@ export default function Alerts() {
       setRecommendations(recsRes.data);
     } catch (err) {
       console.warn('recommendations failed:', err.message);
+    }
+
+    // Fetch anomaly data from prediction endpoint
+    try {
+      const predRes = await getPrediction();
+      setAnomaly(predRes.data?.anomaly || null);
+      setProcessAnomalies(predRes.data?.process_anomalies || []);
+    } catch (err) {
+      console.warn('anomaly data failed:', err.message);
     }
   }, [loading]);
 
@@ -60,11 +71,15 @@ export default function Alerts() {
     );
   }
 
+  // Separate threshold alerts from process alerts
+  const thresholdAlerts = (alerts.alerts || []).filter(a => a.source !== 'anomaly_detection');
+  const processAlerts = (alerts.alerts || []).filter(a => a.source === 'anomaly_detection');
+
   return (
     <div>
       <div className="page-header animate-in">
         <h2>Alerts & Recommendations</h2>
-        <p>Threshold-based warnings and actionable optimization suggestions</p>
+        <p>Threshold-based warnings, anomaly detection, and actionable optimization suggestions</p>
       </div>
 
       <div className="metric-cards animate-in animate-in-delay-1">
@@ -87,20 +102,24 @@ export default function Alerts() {
           </div>
         </div>
         <div className="card" style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 600 }}>Disk Now</div>
-          <div style={{ fontSize: '2.5rem', fontWeight: 800, color: (alerts.current?.disk || 0) > 95 ? '#ef4444' : (alerts.current?.disk || 0) > 80 ? '#ffa726' : '#f97316' }}>
-            {alerts.current?.disk?.toFixed(1) || '—'}%
+          <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 600 }}>Anomaly Status</div>
+          <div style={{ fontSize: '2.5rem', fontWeight: 800, color: anomaly?.is_anomaly ? '#ef4444' : '#00e676' }}>
+            {anomaly?.is_anomaly ? '⚠️' : '✅'}
+          </div>
+          <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
+            {anomaly?.is_anomaly ? anomaly.severity : 'Normal'}
           </div>
         </div>
       </div>
 
       <div className="grid-2 animate-in animate-in-delay-2">
+        {/* ── Threshold Alerts ──────────────────────────────────── */}
         <div className="card">
           <div className="chart-header">
-            <span className="chart-title">Active Alerts</span>
+            <span className="chart-title">Threshold Alerts</span>
           </div>
-          {alerts.alerts?.length > 0 ? (
-            alerts.alerts.map((alert, i) => (
+          {thresholdAlerts.length > 0 ? (
+            thresholdAlerts.map((alert, i) => (
               <div key={i} className={`alert-card ${alert.level}`}>
                 <span className="alert-icon">{getAlertIcon(alert.level)}</span>
                 <div className="alert-content">
@@ -130,27 +149,96 @@ export default function Alerts() {
           )}
         </div>
 
+        {/* ── Anomaly Detection ─────────────────────────────────── */}
         <div className="card">
           <div className="chart-header">
-            <span className="chart-title">💡 Recommendations</span>
+            <span className="chart-title">🧠 Anomaly Detection (ML)</span>
           </div>
-          {recommendations.length > 0 ? recommendations.map((rec, i) => (
-            <div key={i} className={`alert-card ${rec.priority}`}>
-              <span className="alert-icon">{getAlertIcon(rec.priority)}</span>
+
+          {/* ML Anomaly Status */}
+          {anomaly && (
+            <div className={`alert-card ${anomaly.is_anomaly ? (anomaly.severity === 'critical' ? 'critical' : 'warning') : 'info'}`}
+                 style={{ marginBottom: '12px' }}>
+              <span className="alert-icon">{anomaly.is_anomaly ? '🔴' : '🟢'}</span>
               <div className="alert-content">
-                <h4>{rec.message}</h4>
-                <p>{rec.detail}</p>
+                <h4>{anomaly.is_anomaly ? `Anomaly Detected (${anomaly.severity})` : 'System Normal'}</h4>
+                <p>
+                  {anomaly.is_anomaly
+                    ? anomaly.details?.join('; ') || 'Unusual pattern detected'
+                    : 'No anomalies detected by the ML model'}
+                </p>
+                <p style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
+                  Score: {anomaly.anomaly_score} (lower = more anomalous)
+                </p>
               </div>
             </div>
-          )) : (
-            <div className="empty-state" style={{ padding: '30px' }}>
-              <p>Loading recommendations...</p>
+          )}
+
+          {/* Process Anomalies */}
+          {processAnomalies.length > 0 && (
+            <>
+              <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '8px', marginTop: '12px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Process Anomalies
+              </div>
+              {processAnomalies.slice(0, 5).map((pa, i) => (
+                <div key={i} className={`alert-card ${pa.severity}`}>
+                  <span className="alert-icon">{pa.severity === 'critical' ? '🔴' : '🟡'}</span>
+                  <div className="alert-content">
+                    <h4>{pa.message}</h4>
+                    <p>PID: {pa.pid} · Type: {pa.type}</p>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {/* Process alerts from threshold system */}
+          {processAlerts.length > 0 && processAnomalies.length === 0 && (
+            <>
+              <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '8px', marginTop: '12px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Process Warnings
+              </div>
+              {processAlerts.map((alert, i) => (
+                <div key={i} className={`alert-card ${alert.level}`}>
+                  <span className="alert-icon">{getAlertIcon(alert.level)}</span>
+                  <div className="alert-content">
+                    <h4>{alert.message}</h4>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {!anomaly && processAnomalies.length === 0 && processAlerts.length === 0 && (
+            <div className="empty-state" style={{ padding: '20px' }}>
+              <p style={{ color: '#64748b' }}>Anomaly detection model not loaded. Train the model first.</p>
             </div>
           )}
         </div>
       </div>
 
+      {/* ── Recommendations ───────────────────────────────────── */}
       <div className="card animate-in animate-in-delay-3" style={{ marginTop: '18px' }}>
+        <div className="chart-header">
+          <span className="chart-title">💡 AI Recommendations</span>
+        </div>
+        {recommendations.length > 0 ? recommendations.map((rec, i) => (
+          <div key={i} className={`alert-card ${rec.priority}`}>
+            <span className="alert-icon">{getAlertIcon(rec.priority)}</span>
+            <div className="alert-content">
+              <h4>{rec.message}</h4>
+              <p>{rec.detail}</p>
+            </div>
+          </div>
+        )) : (
+          <div className="empty-state" style={{ padding: '30px' }}>
+            <p>Loading recommendations...</p>
+          </div>
+        )}
+      </div>
+
+      {/* ── Alert History ─────────────────────────────────────── */}
+      <div className="card animate-in animate-in-delay-4" style={{ marginTop: '18px' }}>
         <div className="chart-header">
           <span className="chart-title">Alert History</span>
         </div>

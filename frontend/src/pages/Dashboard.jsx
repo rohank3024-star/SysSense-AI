@@ -7,6 +7,7 @@ import {
   getMetricsHistory,
   getHealthScore,
   getRecommendations,
+  getPrediction,
 } from '../services/api';
 
 export default function Dashboard() {
@@ -14,6 +15,7 @@ export default function Dashboard() {
   const [history, setHistory] = useState([]);
   const [health, setHealth] = useState({ score: 0, label: 'Loading', color: '#64748b' });
   const [recommendations, setRecommendations] = useState([]);
+  const [prediction, setPrediction] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -51,6 +53,14 @@ export default function Dashboard() {
       anySuccess = true;
     } catch (err) {
       console.warn('recommendations failed:', err.message);
+    }
+
+    try {
+      const res = await getPrediction();
+      setPrediction(res.data);
+      anySuccess = true;
+    } catch (err) {
+      console.warn('prediction failed:', err.message);
     }
 
     if (anySuccess) {
@@ -96,11 +106,19 @@ export default function Dashboard() {
     );
   }
 
+  // Extract prediction data
+  const isMLModel = prediction?.model_used === 'random_forest';
+  const mlPred = prediction?.ml_prediction;
+  const naivePred = prediction?.naive_baseline;
+  const cpuPred = isMLModel && mlPred ? mlPred.predicted_cpu_30s : naivePred?.predicted_cpu_30s;
+  const ramPred = isMLModel && mlPred ? mlPred.predicted_ram_30s : naivePred?.predicted_ram_30s;
+  const anomaly = prediction?.anomaly;
+
   return (
     <div>
       <div className="page-header animate-in">
         <h2>Dashboard</h2>
-        <p>Real-time system monitoring &amp; health overview</p>
+        <p>Real-time system monitoring & health overview</p>
       </div>
 
       {/* ── Metric Cards ─────────────────────────────────────── */}
@@ -138,6 +156,72 @@ export default function Dashboard() {
           icon="🌐"
         />
       </div>
+
+      {/* ── Prediction Cards ──────────────────────────────────── */}
+      {prediction && (
+        <div className="grid-2 animate-in animate-in-delay-1" style={{ marginBottom: '18px' }}>
+          <div className="card" style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 600 }}>
+              Predicted CPU (30s)
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+              <span style={{ fontSize: '1.4rem', fontWeight: 700, color: '#94a3b8' }}>
+                {metrics?.cpu_percent?.toFixed(1) || '—'}%
+              </span>
+              <span style={{ color: '#64748b', fontSize: '1.2rem' }}>→</span>
+              <span style={{
+                fontSize: '1.8rem', fontWeight: 800,
+                color: cpuPred > (metrics?.cpu_percent || 0) + 3 ? '#ef4444'
+                     : cpuPred < (metrics?.cpu_percent || 0) - 3 ? '#84cc16' : '#06b6d4',
+              }}>
+                {cpuPred?.toFixed(1) || '—'}%
+              </span>
+            </div>
+            <div className="progress-bar" style={{ marginTop: '10px' }}>
+              <div className="progress-bar-fill" style={{ width: `${cpuPred || 0}%`, background: 'var(--gradient-cpu)' }} />
+            </div>
+            <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '6px' }}>
+              {isMLModel ? '🤖 ML Model' : '📊 Baseline'}
+            </div>
+          </div>
+          <div className="card" style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 600 }}>
+              Predicted RAM (30s)
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+              <span style={{ fontSize: '1.4rem', fontWeight: 700, color: '#94a3b8' }}>
+                {metrics?.ram_percent?.toFixed(1) || '—'}%
+              </span>
+              <span style={{ color: '#64748b', fontSize: '1.2rem' }}>→</span>
+              <span style={{
+                fontSize: '1.8rem', fontWeight: 800,
+                color: ramPred > (metrics?.ram_percent || 0) + 3 ? '#ef4444'
+                     : ramPred < (metrics?.ram_percent || 0) - 3 ? '#84cc16' : '#8b5cf6',
+              }}>
+                {ramPred?.toFixed(1) || '—'}%
+              </span>
+            </div>
+            <div className="progress-bar" style={{ marginTop: '10px' }}>
+              <div className="progress-bar-fill" style={{ width: `${ramPred || 0}%`, background: 'var(--gradient-ram)' }} />
+            </div>
+            <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '6px' }}>
+              {isMLModel ? '🤖 ML Model' : '📊 Baseline'}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Anomaly Status Banner ────────────────────────────── */}
+      {anomaly && anomaly.is_anomaly && (
+        <div className={`alert-card ${anomaly.severity === 'critical' ? 'critical' : 'warning'}`}
+             style={{ marginBottom: '18px' }}>
+          <span className="alert-icon">{anomaly.severity === 'critical' ? '🔴' : '🟡'}</span>
+          <div className="alert-content">
+            <h4>Anomaly Detected — {anomaly.severity} severity</h4>
+            <p>{anomaly.details?.join('; ') || 'Unusual system behavior detected by ML model'}</p>
+          </div>
+        </div>
+      )}
 
       {/* ── Chart + Health Score ──────────────────────────────── */}
       <div className="grid-dashboard animate-in animate-in-delay-2">
