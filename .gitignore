@@ -15,6 +15,14 @@ env/
 *.db
 *.sqlite3
 
+# ML Models (trained locally, not committed)
+ml/models/
+
 # OS
 .DS_Store
 Thumbs.db
+
+# Presentations & Docs (local only)
+*.pptx
+*.docx
+create_ppt.py

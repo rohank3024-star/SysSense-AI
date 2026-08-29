@@ -1,9 +1,7 @@
 """
 Background collector for SysSense.
 
-Run this in its own terminal and leave it running from Day 1 - the
-ML model (Day 20+) needs a good volume of historical data to train on,
-so the earlier you start logging, the better your model will be.
+Continuously polls system metrics and stores them in the database.
 
 Usage:
     python collector.py

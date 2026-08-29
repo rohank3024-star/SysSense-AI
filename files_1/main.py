@@ -6,8 +6,7 @@ Endpoints:
     GET /metrics/history    - logged history for dashboard charts
     GET /processes          - top processes sorted by CPU or memory
     GET /alerts             - threshold-based alerts (rule-based, not ML)
-    GET /predict            - naive baseline for now; swap in your trained
-                               ML model's output here once it's ready (Day 20+)
+    GET /predict            - naive baseline prediction
 
 Run with:
     uvicorn main:app --reload
@@ -67,8 +66,7 @@ def top_processes(sort_by: str = "cpu", limit: int = 15):
 
 @app.get("/alerts")
 def check_alerts():
-    """Rule-based alerts. Keep this separate from /predict in your report -
-    this is NOT the ML part, just threshold logic."""
+    """Rule-based threshold alerts for CPU and RAM usage."""
     cpu = psutil.cpu_percent(interval=0.5)
     ram = psutil.virtual_memory().percent
     alerts = []
@@ -82,14 +80,8 @@ def check_alerts():
 @app.get("/predict")
 def predict_placeholder():
     """
-    TEMPORARY naive baseline: predicted value = current value.
-    Once you train the Random Forest model (Day 20+, once there's enough
-    logged history), replace the body of this function with:
-        1. load the saved model (joblib)
-        2. build the feature row from recent metrics
-        3. return model.predict(...)
-    Keep this naive version around - you need it to prove your model
-    actually beats it, which is the key result for your report.
+    Naive baseline predictor: returns current values as predictions.
+    Used as a comparison benchmark against the trained ML model.
     """
     return {
         "note": "naive baseline - replace with trained model output",

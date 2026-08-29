@@ -39,6 +39,6 @@
 2. Feature importances reveal which metrics most influence future CPU/RAM load.
 3. Moving averages and lag features capture momentum and trends that raw current values miss.
 
-### Resume Bullet
+### Conclusion
 
-> Trained a Random Forest model to forecast CPU/RAM usage 30s ahead, outperforming a naive baseline by 26.5% (CPU) and 25.37% (RAM) in MAE.
+The Random Forest model forecasts CPU/RAM usage 30s ahead, outperforming the naive baseline by 26.5% (CPU) and 25.37% (RAM) in MAE. This confirms that engineered lag and rolling-window features capture meaningful temporal patterns in system metrics.

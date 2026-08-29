@@ -31,8 +31,6 @@ def evaluate_model(model, X_test, y_test, label=""):
 def compare_with_baseline(model, X_test, y_test, naive_predictions, label=""):
     """
     Compare ML model against naive baseline (predict current = future).
-
-    This comparison is THE key result for your report.
     """
     ml_pred = model.predict(X_test)
 
@@ -115,9 +113,9 @@ def generate_report(cpu_metrics, ram_metrics, cpu_comparison, ram_comparison,
 2. Feature importances reveal which metrics most influence future CPU/RAM load.
 3. Moving averages and lag features capture momentum and trends that raw current values miss.
 
-### Resume Bullet
+### Conclusion
 
-> Trained a Random Forest model to forecast CPU/RAM usage 30s ahead, outperforming a naive baseline by {cpu_improvement}% (CPU) and {ram_improvement}% (RAM) in MAE.
+The Random Forest model forecasts CPU/RAM usage 30s ahead, outperforming the naive baseline by {cpu_improvement}% (CPU) and {ram_improvement}% (RAM) in MAE. This confirms that engineered lag and rolling-window features capture meaningful temporal patterns in system metrics.
 """.format(
         cpu_improvement=cpu_comparison['improvement_percent'],
         ram_improvement=ram_comparison['improvement_percent'],

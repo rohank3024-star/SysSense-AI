@@ -56,7 +56,7 @@ def get_recent_metrics(limit=100):
 
 
 def get_all_metrics_for_training():
-    """Full history, oldest first. Use this in your ML training script (Day 20+)."""
+    """Full history, oldest first. Used for ML training data extraction."""
     with get_connection() as conn:
         rows = conn.execute("SELECT * FROM metrics ORDER BY id ASC").fetchall()
     return [dict(row) for row in rows]
