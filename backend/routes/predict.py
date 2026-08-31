@@ -13,6 +13,7 @@ Includes:
 from fastapi import APIRouter
 import psutil
 import os
+import sys
 import platform
 
 router = APIRouter(tags=["Prediction"])
@@ -29,6 +30,14 @@ _anomaly_model = None
 _anomaly_feature_names = None
 _model_loaded = False
 _anomaly_loaded = False
+
+# Deep Learning (LSTM) models
+_lstm_cpu_model = None
+_lstm_ram_model = None
+_lstm_scaler = None
+_lstm_feature_names = None
+_lstm_window_size = 10
+_lstm_loaded = False
 
 
 def _try_load_models():
@@ -50,7 +59,6 @@ def _try_load_models():
     except Exception as e:
         print(f"[WARN] Failed to load ML models: {e} - using naive baseline")
 
-    # Load anomaly detection model
     try:
         import joblib
         anomaly_path = os.path.join(ML_MODELS_DIR, "anomaly_model.pkl")
@@ -65,6 +73,60 @@ def _try_load_models():
             print(f"[INFO] Anomaly model not found - anomaly detection disabled")
     except Exception as e:
         print(f"[WARN] Failed to load anomaly model: {e}")
+
+    # Load LSTM deep learning models
+    global _lstm_cpu_model, _lstm_ram_model, _lstm_scaler
+    global _lstm_feature_names, _lstm_window_size, _lstm_loaded
+    try:
+        import torch
+        import joblib
+        sys_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "ml")
+        if sys_path not in sys.path:
+            sys.path.insert(0, sys_path)
+        from dl_model import LSTMPredictor
+
+        lstm_cpu_path = os.path.join(ML_MODELS_DIR, "lstm_cpu_model.pth")
+        lstm_ram_path = os.path.join(ML_MODELS_DIR, "lstm_ram_model.pth")
+        lstm_scaler_path = os.path.join(ML_MODELS_DIR, "lstm_scaler.pkl")
+        lstm_meta_path = os.path.join(ML_MODELS_DIR, "lstm_metadata.pkl")
+
+        if all(os.path.exists(p) for p in [lstm_cpu_path, lstm_ram_path, lstm_scaler_path, lstm_meta_path]):
+            device = torch.device("cpu")
+            lstm_meta = joblib.load(lstm_meta_path)
+            _lstm_feature_names = lstm_meta.get("feature_names", [])
+            _lstm_window_size = lstm_meta.get("window_size", 10)
+            _lstm_scaler = joblib.load(lstm_scaler_path)
+
+            cpu_ckpt = torch.load(lstm_cpu_path, map_location=device, weights_only=True)
+            _lstm_cpu_model = LSTMPredictor(
+                input_size=cpu_ckpt["input_size"],
+                hidden1=cpu_ckpt["hidden1"],
+                hidden2=cpu_ckpt["hidden2"],
+                dense_size=cpu_ckpt["dense_size"],
+                dropout=cpu_ckpt["dropout"],
+            )
+            _lstm_cpu_model.load_state_dict(cpu_ckpt["model_state_dict"])
+            _lstm_cpu_model.eval()
+
+            ram_ckpt = torch.load(lstm_ram_path, map_location=device, weights_only=True)
+            _lstm_ram_model = LSTMPredictor(
+                input_size=ram_ckpt["input_size"],
+                hidden1=ram_ckpt["hidden1"],
+                hidden2=ram_ckpt["hidden2"],
+                dense_size=ram_ckpt["dense_size"],
+                dropout=ram_ckpt["dropout"],
+            )
+            _lstm_ram_model.load_state_dict(ram_ckpt["model_state_dict"])
+            _lstm_ram_model.eval()
+
+            _lstm_loaded = True
+            print(f"[OK] LSTM deep learning models loaded")
+        else:
+            print(f"[INFO] LSTM models not found - DL prediction disabled")
+    except ImportError:
+        print(f"[INFO] PyTorch not installed - LSTM prediction disabled")
+    except Exception as e:
+        print(f"[WARN] Failed to load LSTM models: {e}")
 
 _try_load_models()
 
@@ -281,14 +343,57 @@ def predict():
     # Per-process anomalies
     result["process_anomalies"] = _get_process_anomalies()
 
+    # ── Deep Learning (LSTM) prediction ───────────────────────────────
+    if _lstm_loaded and _lstm_cpu_model and _lstm_ram_model:
+        try:
+            import torch
+            import numpy as np
+            from database import get_recent_metrics
+
+            recent = get_recent_metrics(_lstm_window_size + 5)
+            if len(recent) >= _lstm_window_size:
+                # Build feature window
+                window_rows = []
+                for r in recent[-_lstm_window_size:]:
+                    cpu_vals_all = [m["cpu_percent"] for m in recent if m.get("cpu_percent") is not None]
+                    ram_vals_all = [m["ram_percent"] for m in recent if m.get("ram_percent") is not None]
+
+                    row = {f: 0 for f in _lstm_feature_names}
+                    row["cpu_current"] = r.get("cpu_percent", 0)
+                    row["ram_current"] = r.get("ram_percent", 0)
+                    row["disk_current"] = r.get("disk_percent", 0)
+                    window_rows.append([row.get(f, 0) for f in _lstm_feature_names])
+
+                window = np.array(window_rows)
+                if _lstm_scaler:
+                    window = _lstm_scaler.transform(window)
+
+                X = torch.FloatTensor(window).unsqueeze(0)
+
+                with torch.no_grad():
+                    dl_cpu = float(_lstm_cpu_model(X).item())
+                    dl_ram = float(_lstm_ram_model(X).item())
+
+                dl_cpu = max(0, min(100, dl_cpu))
+                dl_ram = max(0, min(100, dl_ram))
+
+                result["dl_prediction"] = {
+                    "predicted_cpu_30s": round(dl_cpu, 2),
+                    "predicted_ram_30s": round(dl_ram, 2),
+                    "model": "lstm",
+                }
+        except Exception as e:
+            result["dl_error"] = str(e)
+
     return result
 
 
 @router.get("/predict/reload")
 def reload_models():
-    """Force-reload ML models (after retraining)."""
+    """Force-reload all ML and DL models (after retraining)."""
     _try_load_models()
     return {
         "model_loaded": _model_loaded,
         "anomaly_loaded": _anomaly_loaded,
+        "lstm_loaded": _lstm_loaded,
     }
