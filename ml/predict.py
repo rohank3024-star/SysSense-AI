@@ -91,3 +91,131 @@ def predict_future(models, feature_row):
         ))
 
     return result
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Deep Learning (LSTM) Model Support
+# ══════════════════════════════════════════════════════════════════════════
+
+def load_dl_models():
+    """
+    Load saved LSTM models for CPU and RAM prediction.
+
+    Returns dict with model objects, scaler, and metadata, or None values
+    if PyTorch is not installed or models are not found.
+    """
+    dl_models = {
+        "lstm_cpu": None,
+        "lstm_ram": None,
+        "scaler": None,
+        "dl_metadata": None,
+    }
+
+    try:
+        import torch
+        from dl_model import LSTMPredictor
+    except ImportError:
+        return dl_models
+
+    try:
+        cpu_path = os.path.join(MODELS_DIR, "lstm_cpu_model.pth")
+        ram_path = os.path.join(MODELS_DIR, "lstm_ram_model.pth")
+        scaler_path = os.path.join(MODELS_DIR, "lstm_scaler.pkl")
+        meta_path = os.path.join(MODELS_DIR, "lstm_metadata.pkl")
+
+        if not all(os.path.exists(p) for p in [cpu_path, ram_path, scaler_path, meta_path]):
+            return dl_models
+
+        dl_meta = joblib.load(meta_path)
+        dl_models["dl_metadata"] = dl_meta
+        dl_models["scaler"] = joblib.load(scaler_path)
+
+        input_size = dl_meta.get("input_size", 22)
+        device = torch.device("cpu")
+
+        # Load CPU LSTM
+        cpu_ckpt = torch.load(cpu_path, map_location=device, weights_only=True)
+        cpu_model = LSTMPredictor(
+            input_size=cpu_ckpt["input_size"],
+            hidden1=cpu_ckpt["hidden1"],
+            hidden2=cpu_ckpt["hidden2"],
+            dense_size=cpu_ckpt["dense_size"],
+            dropout=cpu_ckpt["dropout"],
+        )
+        cpu_model.load_state_dict(cpu_ckpt["model_state_dict"])
+        cpu_model.eval()
+        dl_models["lstm_cpu"] = cpu_model
+
+        # Load RAM LSTM
+        ram_ckpt = torch.load(ram_path, map_location=device, weights_only=True)
+        ram_model = LSTMPredictor(
+            input_size=ram_ckpt["input_size"],
+            hidden1=ram_ckpt["hidden1"],
+            hidden2=ram_ckpt["hidden2"],
+            dense_size=ram_ckpt["dense_size"],
+            dropout=ram_ckpt["dropout"],
+        )
+        ram_model.load_state_dict(ram_ckpt["model_state_dict"])
+        ram_model.eval()
+        dl_models["lstm_ram"] = ram_model
+
+    except Exception as e:
+        print(f"Error loading LSTM models: {e}")
+
+    return dl_models
+
+
+def predict_future_dl(dl_models, feature_history):
+    """
+    Predict CPU and RAM 30 seconds ahead using LSTM.
+
+    Args:
+        dl_models: dict from load_dl_models()
+        feature_history: list of dicts (most recent window_size feature rows)
+
+    Returns:
+        dict with LSTM predictions or None
+    """
+    if not dl_models.get("lstm_cpu") or not dl_models.get("lstm_ram"):
+        return None
+
+    try:
+        import torch
+
+        metadata = dl_models.get("dl_metadata", {})
+        feature_names = metadata.get("feature_names", [])
+        window_size = metadata.get("window_size", 10)
+        scaler = dl_models.get("scaler")
+
+        if len(feature_history) < window_size:
+            return None
+
+        # Build window from feature history
+        window = []
+        for row in feature_history[-window_size:]:
+            window.append([row.get(f, 0) for f in feature_names])
+
+        window = np.array(window)
+
+        # Scale features
+        if scaler:
+            window = scaler.transform(window)
+
+        X = torch.FloatTensor(window).unsqueeze(0)  # (1, window_size, features)
+
+        with torch.no_grad():
+            cpu_pred = float(dl_models["lstm_cpu"](X).item())
+            ram_pred = float(dl_models["lstm_ram"](X).item())
+
+        cpu_pred = max(0.0, min(100.0, cpu_pred))
+        ram_pred = max(0.0, min(100.0, ram_pred))
+
+        return {
+            "predicted_cpu_30s": round(cpu_pred, 2),
+            "predicted_ram_30s": round(ram_pred, 2),
+            "model": "lstm",
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
