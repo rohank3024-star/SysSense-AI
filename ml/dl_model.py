@@ -47,7 +47,7 @@ except ImportError:
     TORCH_AVAILABLE = False
     print("[!] PyTorch not installed. Install with: pip install torch")
 
-from preprocessing import load_data, engineer_features
+from .preprocessing import load_data, engineer_features
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 REPORT_PATH = os.path.join(os.path.dirname(__file__), "dl_evaluation_report.md")

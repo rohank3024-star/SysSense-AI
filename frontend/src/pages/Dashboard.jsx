@@ -108,10 +108,22 @@ export default function Dashboard() {
 
   // Extract prediction data
   const isMLModel = prediction?.model_used === 'random_forest';
+
   const mlPred = prediction?.ml_prediction;
+  const dlPred = prediction?.dl_prediction;
   const naivePred = prediction?.naive_baseline;
-  const cpuPred = isMLModel && mlPred ? mlPred.predicted_cpu_30s : naivePred?.predicted_cpu_30s;
-  const ramPred = isMLModel && mlPred ? mlPred.predicted_ram_30s : naivePred?.predicted_ram_30s;
+
+  const cpuPred = isMLModel && mlPred
+    ? mlPred.predicted_cpu_30s
+    : naivePred?.predicted_cpu_30s;
+
+  const ramPred = isMLModel && mlPred
+    ? mlPred.predicted_ram_30s
+    : naivePred?.predicted_ram_30s;
+
+  const lstmCpuPred = dlPred?.predicted_cpu_30s;
+  const lstmRamPred = dlPred?.predicted_ram_30s;
+
   const anomaly = prediction?.anomaly;
 
   return (
@@ -159,54 +171,183 @@ export default function Dashboard() {
 
       {/* ── Prediction Cards ──────────────────────────────────── */}
       {prediction && (
-        <div className="grid-2 animate-in animate-in-delay-1" style={{ marginBottom: '18px' }}>
-          <div className="card" style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 600 }}>
-              Predicted CPU (30s)
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
-              <span style={{ fontSize: '1.4rem', fontWeight: 700, color: '#94a3b8' }}>
-                {metrics?.cpu_percent?.toFixed(1) || '—'}%
-              </span>
-              <span style={{ color: '#64748b', fontSize: '1.2rem' }}>→</span>
-              <span style={{
-                fontSize: '1.8rem', fontWeight: 800,
-                color: cpuPred > (metrics?.cpu_percent || 0) + 3 ? '#ef4444'
-                     : cpuPred < (metrics?.cpu_percent || 0) - 3 ? '#84cc16' : '#06b6d4',
+        <div className="animate-in animate-in-delay-1" style={{ marginBottom: '18px' }}>
+
+          {/* Model Comparison Header */}
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '12px'
+          }}>
+            <div>
+              <h3 style={{
+                margin: 0,
+                fontSize: '1rem',
+                color: '#f1f5f9'
               }}>
-                {cpuPred?.toFixed(1) || '—'}%
-              </span>
+                AI Resource Prediction
+              </h3>
+              <p style={{
+                margin: '4px 0 0',
+                fontSize: '0.72rem',
+                color: '#64748b'
+              }}>
+                CPU & RAM usage forecast for the next 30 seconds
+              </p>
             </div>
-            <div className="progress-bar" style={{ marginTop: '10px' }}>
-              <div className="progress-bar-fill" style={{ width: `${cpuPred || 0}%`, background: 'var(--gradient-cpu)' }} />
-            </div>
-            <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '6px' }}>
-              {isMLModel ? '🤖 ML Model' : '📊 Baseline'}
-            </div>
+
+            <span style={{
+              fontSize: '0.7rem',
+              padding: '5px 10px',
+              borderRadius: '999px',
+              background: 'rgba(6, 182, 212, 0.10)',
+              color: '#06b6d4',
+              border: '1px solid rgba(6, 182, 212, 0.20)'
+            }}>
+              30s Forecast
+            </span>
           </div>
-          <div className="card" style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 600 }}>
-              Predicted RAM (30s)
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
-              <span style={{ fontSize: '1.4rem', fontWeight: 700, color: '#94a3b8' }}>
-                {metrics?.ram_percent?.toFixed(1) || '—'}%
-              </span>
-              <span style={{ color: '#64748b', fontSize: '1.2rem' }}>→</span>
-              <span style={{
-                fontSize: '1.8rem', fontWeight: 800,
-                color: ramPred > (metrics?.ram_percent || 0) + 3 ? '#ef4444'
-                     : ramPred < (metrics?.ram_percent || 0) - 3 ? '#84cc16' : '#8b5cf6',
+
+          {/* Prediction Cards */}
+          <div className="grid-2">
+
+            {/* Random Forest */}
+            <div className="card" style={{ textAlign: 'center' }}>
+
+              <div style={{
+                fontSize: '0.78rem',
+                color: '#94a3b8',
+                marginBottom: '8px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.8px',
+                fontWeight: 600
               }}>
-                {ramPred?.toFixed(1) || '—'}%
-              </span>
+                🤖 Random Forest
+              </div>
+
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-around',
+                gap: '12px'
+              }}>
+
+                <div>
+                  <div style={{
+                    fontSize: '0.68rem',
+                    color: '#64748b',
+                    marginBottom: '4px'
+                  }}>
+                    CPU
+                  </div>
+
+                  <div style={{
+                    fontSize: '1.7rem',
+                    fontWeight: 800,
+                    color: '#06b6d4'
+                  }}>
+                    {mlPred?.predicted_cpu_30s?.toFixed(1) || '—'}%
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{
+                    fontSize: '0.68rem',
+                    color: '#64748b',
+                    marginBottom: '4px'
+                  }}>
+                    RAM
+                  </div>
+
+                  <div style={{
+                    fontSize: '1.7rem',
+                    fontWeight: 800,
+                    color: '#8b5cf6'
+                  }}>
+                    {mlPred?.predicted_ram_30s?.toFixed(1) || '—'}%
+                  </div>
+                </div>
+
+              </div>
+
+              <div style={{
+                marginTop: '10px',
+                fontSize: '0.68rem',
+                color: '#64748b'
+              }}>
+                Trained ML model
+              </div>
+
             </div>
-            <div className="progress-bar" style={{ marginTop: '10px' }}>
-              <div className="progress-bar-fill" style={{ width: `${ramPred || 0}%`, background: 'var(--gradient-ram)' }} />
+
+            {/* LSTM */}
+            <div className="card" style={{ textAlign: 'center' }}>
+
+              <div style={{
+                fontSize: '0.78rem',
+                color: '#94a3b8',
+                marginBottom: '8px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.8px',
+                fontWeight: 600
+              }}>
+                🧠 LSTM Deep Learning
+              </div>
+
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-around',
+                gap: '12px'
+              }}>
+
+                <div>
+                  <div style={{
+                    fontSize: '0.68rem',
+                    color: '#64748b',
+                    marginBottom: '4px'
+                  }}>
+                    CPU
+                  </div>
+
+                  <div style={{
+                    fontSize: '1.7rem',
+                    fontWeight: 800,
+                    color: '#06b6d4'
+                  }}>
+                    {lstmCpuPred?.toFixed(1) || '—'}%
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{
+                    fontSize: '0.68rem',
+                    color: '#64748b',
+                    marginBottom: '4px'
+                  }}>
+                    RAM
+                  </div>
+
+                  <div style={{
+                    fontSize: '1.7rem',
+                    fontWeight: 800,
+                    color: '#8b5cf6'
+                  }}>
+                    {lstmRamPred?.toFixed(1) || '—'}%
+                  </div>
+                </div>
+
+              </div>
+
+              <div style={{
+                marginTop: '10px',
+                fontSize: '0.68rem',
+                color: '#64748b'
+              }}>
+                Sequence-based deep learning model
+              </div>
+
             </div>
-            <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '6px' }}>
-              {isMLModel ? '🤖 ML Model' : '📊 Baseline'}
-            </div>
+
           </div>
         </div>
       )}

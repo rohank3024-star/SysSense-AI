@@ -80,10 +80,10 @@ def _try_load_models():
     try:
         import torch
         import joblib
-        sys_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "ml")
-        if sys_path not in sys.path:
-            sys.path.insert(0, sys_path)
-        from dl_model import LSTMPredictor
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        from ml.dl_model import LSTMPredictor
 
         lstm_cpu_path = os.path.join(ML_MODELS_DIR, "lstm_cpu_model.pth")
         lstm_ram_path = os.path.join(ML_MODELS_DIR, "lstm_ram_model.pth")
@@ -177,6 +177,11 @@ def _build_feature_row():
         "ram_std5": float(np.std(ram_vals[-5:])) if len(ram_vals) >= 5 else 0,
         "net_sent_rate": 0,
         "net_recv_rate": 0,
+        "network_latency": 0,
+        "context_switches": 0,
+        "cache_miss_rate": 0,
+        "temperature": 0,
+        "power_consumption": 0,
         "hour": hour,
         "minute": minute,
     }
@@ -307,8 +312,39 @@ def predict():
         features = _build_feature_row()
         if features:
             import numpy as np
-            feature_names = sorted(features.keys())
-            X = np.array([[features[f] for f in feature_names]])
+            # IMPORTANT:
+            # These features MUST be in the exact same order used during training.
+            feature_names = [
+                "cpu_current",
+                "ram_current",
+                "disk_current",
+                "cpu_lag1",
+                "ram_lag1",
+                "cpu_lag3",
+                "ram_lag3",
+                "cpu_lag5",
+                "ram_lag5",
+                "cpu_ma5",
+                "cpu_ma10",
+                "ram_ma5",
+                "ram_ma10",
+                "cpu_delta",
+                "ram_delta",
+                "disk_delta",
+                "cpu_std5",
+                "ram_std5",
+                "net_sent_rate",
+                "net_recv_rate",
+                "network_latency",
+                "context_switches",
+                "cache_miss_rate",
+                "temperature",
+                "power_consumption",
+                "hour",
+                "minute",
+            ]
+
+            X = np.array([[features.get(f, 0) for f in feature_names]])
 
             try:
                 pred_cpu = float(_cpu_model.predict(X)[0])
@@ -348,32 +384,232 @@ def predict():
         try:
             import torch
             import numpy as np
+            import statistics
+            from datetime import datetime
             from database import get_recent_metrics
 
-            recent = get_recent_metrics(_lstm_window_size + 5)
+            # We need enough history for:
+            # - 10 timestep LSTM window
+            # - lag-5 features
+            # - MA10 features
+            recent = get_recent_metrics(max(_lstm_window_size + 10, 20))
+
             if len(recent) >= _lstm_window_size:
-                # Build feature window
-                window_rows = []
-                for r in recent[-_lstm_window_size:]:
-                    cpu_vals_all = [m["cpu_percent"] for m in recent if m.get("cpu_percent") is not None]
-                    ram_vals_all = [m["ram_percent"] for m in recent if m.get("ram_percent") is not None]
 
-                    row = {f: 0 for f in _lstm_feature_names}
-                    row["cpu_current"] = r.get("cpu_percent", 0)
-                    row["ram_current"] = r.get("ram_percent", 0)
-                    row["disk_current"] = r.get("disk_percent", 0)
-                    window_rows.append([row.get(f, 0) for f in _lstm_feature_names])
+                def get_value(item, key, default=0.0):
+                    value = item.get(key)
+                    if value is None:
+                        return default
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        return default
 
-                window = np.array(window_rows)
+                def get_timestamp(item):
+                    ts = item.get("timestamp")
+
+                    if not ts:
+                        return None
+
+                    try:
+                        ts = str(ts).replace("Z", "+00:00")
+                        return datetime.fromisoformat(ts)
+                    except (ValueError, TypeError):
+                        return None
+
+                # Extract historical values
+                cpu_values = [
+                    get_value(m, "cpu_percent")
+                    for m in recent
+                ]
+
+                ram_values = [
+                    get_value(m, "ram_percent")
+                    for m in recent
+                ]
+
+                disk_values = [
+                    get_value(m, "disk_percent")
+                    for m in recent
+                ]
+
+                sent_values = [
+                    get_value(m, "net_sent_mb")
+                    for m in recent
+                ]
+
+                recv_values = [
+                    get_value(m, "net_recv_mb")
+                    for m in recent
+                ]
+
+                # Build feature rows
+                feature_rows = []
+
+                for i in range(len(recent)):
+
+                    cpu_current = cpu_values[i]
+                    ram_current = ram_values[i]
+                    disk_current = disk_values[i]
+
+                    # ── Lag features ──────────────────────────────
+                    cpu_lag1 = cpu_values[i - 1] if i >= 1 else cpu_current
+                    ram_lag1 = ram_values[i - 1] if i >= 1 else ram_current
+
+                    cpu_lag3 = cpu_values[i - 3] if i >= 3 else cpu_current
+                    ram_lag3 = ram_values[i - 3] if i >= 3 else ram_current
+
+                    cpu_lag5 = cpu_values[i - 5] if i >= 5 else cpu_current
+                    ram_lag5 = ram_values[i - 5] if i >= 5 else ram_current
+
+                    # ── Moving averages ───────────────────────────
+                    cpu_ma5_values = cpu_values[max(0, i - 4):i + 1]
+                    cpu_ma10_values = cpu_values[max(0, i - 9):i + 1]
+
+                    ram_ma5_values = ram_values[max(0, i - 4):i + 1]
+                    ram_ma10_values = ram_values[max(0, i - 9):i + 1]
+
+                    cpu_ma5 = sum(cpu_ma5_values) / len(cpu_ma5_values)
+                    cpu_ma10 = sum(cpu_ma10_values) / len(cpu_ma10_values)
+
+                    ram_ma5 = sum(ram_ma5_values) / len(ram_ma5_values)
+                    ram_ma10 = sum(ram_ma10_values) / len(ram_ma10_values)
+
+                    # ── Delta features ────────────────────────────
+                    previous_cpu = cpu_values[i - 1] if i >= 1 else cpu_current
+                    previous_ram = ram_values[i - 1] if i >= 1 else ram_current
+                    previous_disk = disk_values[i - 1] if i >= 1 else disk_current
+
+                    cpu_delta = cpu_current - previous_cpu
+                    ram_delta = ram_current - previous_ram
+                    disk_delta = disk_current - previous_disk
+
+                    # ── Rolling standard deviation ────────────────
+                    cpu_std_values = cpu_values[max(0, i - 4):i + 1]
+                    ram_std_values = ram_values[max(0, i - 4):i + 1]
+
+                    if len(cpu_std_values) > 1:
+                        cpu_std5 = statistics.stdev(cpu_std_values)
+                    else:
+                        cpu_std5 = 0.0
+
+                    if len(ram_std_values) > 1:
+                        ram_std5 = statistics.stdev(ram_std_values)
+                    else:
+                        ram_std5 = 0.0
+
+                    # ── Network rates ─────────────────────────────
+                    net_sent_rate = 0.0
+                    net_recv_rate = 0.0
+
+                    if i >= 1:
+                        previous_timestamp = get_timestamp(recent[i - 1])
+                        current_timestamp = get_timestamp(recent[i])
+
+                        if previous_timestamp and current_timestamp:
+                            delta_seconds = (
+                                current_timestamp - previous_timestamp
+                            ).total_seconds()
+
+                            if delta_seconds > 0:
+                                net_sent_rate = (
+                                    sent_values[i] - sent_values[i - 1]
+                                ) / delta_seconds
+
+                                net_recv_rate = (
+                                    recv_values[i] - recv_values[i - 1]
+                                ) / delta_seconds
+
+                    # Prevent negative rates if counters reset
+                    net_sent_rate = max(0.0, net_sent_rate)
+                    net_recv_rate = max(0.0, net_recv_rate)
+
+                    # ── Timestamp features ────────────────────────
+                    timestamp = get_timestamp(recent[i])
+
+                    if timestamp:
+                        hour = timestamp.hour
+                        minute = timestamp.minute
+                    else:
+                        hour = 0
+                        minute = 0
+
+                    # These features are not currently stored by the
+                    # backend metrics database, so use 0 as fallback.
+                    network_latency = 0.0
+                    context_switches = 0.0
+                    cache_miss_rate = 0.0
+                    temperature = 0.0
+                    power_consumption = 0.0
+
+                    # ── Complete 27-feature row ────────────────────
+                    row = {
+                        "cpu_current": cpu_current,
+                        "ram_current": ram_current,
+                        "disk_current": disk_current,
+
+                        "cpu_lag1": cpu_lag1,
+                        "ram_lag1": ram_lag1,
+
+                        "cpu_lag3": cpu_lag3,
+                        "ram_lag3": ram_lag3,
+
+                        "cpu_lag5": cpu_lag5,
+                        "ram_lag5": ram_lag5,
+
+                        "cpu_ma5": cpu_ma5,
+                        "cpu_ma10": cpu_ma10,
+
+                        "ram_ma5": ram_ma5,
+                        "ram_ma10": ram_ma10,
+
+                        "cpu_delta": cpu_delta,
+                        "ram_delta": ram_delta,
+                        "disk_delta": disk_delta,
+
+                        "cpu_std5": cpu_std5,
+                        "ram_std5": ram_std5,
+
+                        "net_sent_rate": net_sent_rate,
+                        "net_recv_rate": net_recv_rate,
+
+                        "network_latency": network_latency,
+                        "context_switches": context_switches,
+                        "cache_miss_rate": cache_miss_rate,
+                        "temperature": temperature,
+                        "power_consumption": power_consumption,
+
+                        "hour": hour,
+                        "minute": minute,
+                    }
+
+                    # Preserve the exact feature order stored in
+                    # LSTM metadata.
+                    feature_rows.append(
+                        [row.get(f, 0.0) for f in _lstm_feature_names]
+                    )
+
+                # Use only the final 10 timesteps for the LSTM
+                window_rows = feature_rows[-_lstm_window_size:]
+
+                window = np.array(
+                    window_rows,
+                    dtype=np.float32
+                )
+
+                # Apply the scaler fitted during LSTM training
                 if _lstm_scaler:
                     window = _lstm_scaler.transform(window)
 
+                # Shape:
+                # (batch_size=1, sequence_length=10, features=27)
                 X = torch.FloatTensor(window).unsqueeze(0)
 
                 with torch.no_grad():
                     dl_cpu = float(_lstm_cpu_model(X).item())
                     dl_ram = float(_lstm_ram_model(X).item())
 
+                # Keep predictions within valid percentage range
                 dl_cpu = max(0, min(100, dl_cpu))
                 dl_ram = max(0, min(100, dl_ram))
 
@@ -382,6 +618,7 @@ def predict():
                     "predicted_ram_30s": round(dl_ram, 2),
                     "model": "lstm",
                 }
+
         except Exception as e:
             result["dl_error"] = str(e)
 

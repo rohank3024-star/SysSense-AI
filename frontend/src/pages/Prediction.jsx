@@ -59,10 +59,20 @@ export default function Prediction() {
 
   const isMLModel = prediction?.model_used === 'random_forest';
   const mlPred = prediction?.ml_prediction;
+  const dlPred = prediction?.dl_prediction;
   const naivePred = prediction?.naive_baseline;
   const current = prediction?.current;
-  const cpuPred = isMLModel && mlPred ? mlPred.predicted_cpu_30s : naivePred?.predicted_cpu_30s;
-  const ramPred = isMLModel && mlPred ? mlPred.predicted_ram_30s : naivePred?.predicted_ram_30s;
+
+  const cpuPred = isMLModel && mlPred
+    ? mlPred.predicted_cpu_30s
+    : naivePred?.predicted_cpu_30s;
+
+  const ramPred = isMLModel && mlPred
+    ? mlPred.predicted_ram_30s
+    : naivePred?.predicted_ram_30s;
+
+  const lstmCpuPred = dlPred?.predicted_cpu_30s;
+  const lstmRamPred = dlPred?.predicted_ram_30s;
 
   return (
     <div>
@@ -77,65 +87,158 @@ export default function Prediction() {
         </span>
         <span style={{ fontSize: '0.82rem', color: '#94a3b8' }}>
           {isMLModel
-            ? 'Random Forest Regressor is generating predictions based on historical patterns'
+            ? 'Random Forest Regressor and LSTM models are generating 30-second ahead predictions based on historical patterns'
             : 'ML model not yet trained — using naive baseline (predicted = current). Train the model once you have enough data.'}
         </span>
       </div>
 
       <div className="prediction-grid animate-in animate-in-delay-1">
+
+        {/* CPU Prediction */}
         <div className="card prediction-card">
           <div className="prediction-label">CPU Usage Prediction</div>
+
           <div className="prediction-values">
             <div>
-              <div className="prediction-current">{current?.cpu?.toFixed(1) || '—'}%</div>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Current</div>
+              <div className="prediction-current">
+                {current?.cpu?.toFixed(1) || '—'}%
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                Current
+              </div>
             </div>
+
             <div className="prediction-arrow">→</div>
+
             <div>
-              <div className={`prediction-future ${getPredClass(current?.cpu, cpuPred)}`}>{cpuPred?.toFixed(1) || '—'}%</div>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>In 30s</div>
+              <div className={`prediction-future ${getPredClass(current?.cpu, cpuPred)}`}>
+                {cpuPred?.toFixed(1) || '—'}%
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                RF • 30s
+              </div>
             </div>
           </div>
+
           <div className="progress-bar" style={{ marginTop: '16px' }}>
-            <div className="progress-bar-fill" style={{ width: `${cpuPred || 0}%`, background: 'var(--gradient-cpu)' }} />
+            <div
+              className="progress-bar-fill"
+              style={{
+                width: `${cpuPred || 0}%`,
+                background: 'var(--gradient-cpu)'
+              }}
+            />
+          </div>
+
+          <div style={{
+            marginTop: '12px',
+            paddingTop: '10px',
+            borderTop: '1px solid rgba(255,255,255,0.05)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: '0.75rem'
+          }}>
+            <span style={{ color: '#94a3b8' }}>
+              🧠 LSTM
+            </span>
+            <span style={{ color: '#06b6d4', fontWeight: 600 }}>
+              {lstmCpuPred?.toFixed(1) || '—'}%
+            </span>
           </div>
         </div>
 
+
+        {/* RAM Prediction */}
         <div className="card prediction-card">
           <div className="prediction-label">RAM Usage Prediction</div>
+
           <div className="prediction-values">
             <div>
-              <div className="prediction-current">{current?.ram?.toFixed(1) || '—'}%</div>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Current</div>
+              <div className="prediction-current">
+                {current?.ram?.toFixed(1) || '—'}%
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                Current
+              </div>
             </div>
+
             <div className="prediction-arrow">→</div>
+
             <div>
-              <div className={`prediction-future ${getPredClass(current?.ram, ramPred)}`}>{ramPred?.toFixed(1) || '—'}%</div>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>In 30s</div>
+              <div className={`prediction-future ${getPredClass(current?.ram, ramPred)}`}>
+                {ramPred?.toFixed(1) || '—'}%
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                RF • 30s
+              </div>
             </div>
           </div>
+
           <div className="progress-bar" style={{ marginTop: '16px' }}>
-            <div className="progress-bar-fill" style={{ width: `${ramPred || 0}%`, background: 'var(--gradient-ram)' }} />
+            <div
+              className="progress-bar-fill"
+              style={{
+                width: `${ramPred || 0}%`,
+                background: 'var(--gradient-ram)'
+              }}
+            />
+          </div>
+
+          <div style={{
+            marginTop: '12px',
+            paddingTop: '10px',
+            borderTop: '1px solid rgba(255,255,255,0.05)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: '0.75rem'
+          }}>
+            <span style={{ color: '#94a3b8' }}>
+              🧠 LSTM
+            </span>
+            <span style={{ color: '#8b5cf6', fontWeight: 600 }}>
+              {lstmRamPred?.toFixed(1) || '—'}%
+            </span>
           </div>
         </div>
 
+
+        {/* Disk Usage */}
         <div className="card prediction-card">
           <div className="prediction-label">Disk Usage</div>
+
           <div className="prediction-values">
             <div>
-              <div className="prediction-current">{current?.disk?.toFixed(1) || '—'}%</div>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Current</div>
+              <div className="prediction-current">
+                {current?.disk?.toFixed(1) || '—'}%
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                Current
+              </div>
             </div>
+
             <div className="prediction-arrow">→</div>
+
             <div>
-              <div className="prediction-future stable">{current?.disk?.toFixed(1) || '—'}%</div>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Stable</div>
+              <div className="prediction-future stable">
+                {current?.disk?.toFixed(1) || '—'}%
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                Stable
+              </div>
             </div>
           </div>
+
           <div className="progress-bar" style={{ marginTop: '16px' }}>
-            <div className="progress-bar-fill" style={{ width: `${current?.disk || 0}%`, background: 'var(--gradient-disk)' }} />
+            <div
+              className="progress-bar-fill"
+              style={{
+                width: `${current?.disk || 0}%`,
+                background: 'var(--gradient-disk)'
+              }}
+            />
           </div>
         </div>
+
       </div>
 
       {prediction?.feature_importances && (
