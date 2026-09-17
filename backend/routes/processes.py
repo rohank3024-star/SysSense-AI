@@ -40,7 +40,7 @@ def _refresh_process_list():
                 "name": info["name"],
                 "cpu_percent": info["cpu_percent"] or 0,
                 "memory_percent": round(info["memory_percent"] or 0, 2),
-                "memory_rss_mb": 0,  # skip slow memory_info() call
+                "memory_rss_mb": round((p.memory_info().rss / (1024 * 1024)), 2),
                 "status": info["status"],
                 "threads": info["num_threads"] or 0,
             })
