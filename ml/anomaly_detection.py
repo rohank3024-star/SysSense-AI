@@ -23,7 +23,7 @@ import joblib
 from sklearn.ensemble import IsolationForest
 from sklearn.metrics import classification_report, confusion_matrix
 
-from preprocessing import load_data
+from .preprocessing import load_data
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 
