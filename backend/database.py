@@ -7,11 +7,12 @@ Tables:
     alerts_log        – historical alert records
 """
 import sqlite3
+import os
 import platform
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
-DB_PATH = "sysense.db"
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sysense.db")
 
 
 @contextmanager
