@@ -9,6 +9,7 @@ Usage:
 """
 import time
 import platform
+import sqlite3
 import psutil
 from database import init_db, insert_metric, insert_process_snapshot
 
@@ -72,13 +73,16 @@ def main():
     cycle = 0
     try:
         while True:
-            cpu, ram, disk = collect_once()
-            cycle += 1
-            marker = " [+procs]" if cycle % PROCESS_SNAPSHOT_EVERY == 0 else ""
-            print(f"CPU: {cpu:5.1f}%  RAM: {ram:5.1f}%  Disk: {disk:5.1f}%{marker}")
+            try:
+                cpu, ram, disk = collect_once()
+                cycle += 1
+                marker = " [+procs]" if cycle % PROCESS_SNAPSHOT_EVERY == 0 else ""
+                print(f"CPU: {cpu:5.1f}%  RAM: {ram:5.1f}%  Disk: {disk:5.1f}%{marker}")
 
-            if cycle % PROCESS_SNAPSHOT_EVERY == 0:
-                snapshot_top_processes()
+                if cycle % PROCESS_SNAPSHOT_EVERY == 0:
+                    snapshot_top_processes()
+            except sqlite3.OperationalError as e:
+                print(f"[Warning] Database busy, retrying next cycle: {e}")
 
             time.sleep(POLL_INTERVAL_SECONDS)
     except KeyboardInterrupt:
