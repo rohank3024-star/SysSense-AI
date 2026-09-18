@@ -158,6 +158,12 @@ Displays live CPU, RAM, Disk, Network, running processes, trend graphs, predicti
 ### Module 8 – System Health Score
 Generates a weighted health score (0-100) considering CPU, RAM, Disk, and active alerts.
 
+### Module 9 – LSTM Deep Learning Prediction
+Uses a 2-layer stacked LSTM model built with PyTorch to predict CPU and RAM usage 30 seconds ahead. The model uses a sliding window of 10 consecutive timesteps to capture temporal dependencies and sequential system patterns.
+
+### Module 10 – UI Theme Toggle
+Supports user-configurable **Dark/Light theme switching** across the dashboard, including the sidebar, cards, backgrounds, borders, and text.
+
 ---
 
 ## 🔌 API Endpoints
@@ -252,7 +258,6 @@ Dashboard + Alerts + Recommendations
 - **Docker Container Metrics** — Per-container CPU/RAM tracking
 - **Email/Slack Alerts** — Push notifications when anomalies are detected
 - **Model Retraining Pipeline** — Auto-retrain models as more live data accumulates
-- **Dark/Light Theme Toggle** — User-configurable dashboard theme
 
 ---
 
