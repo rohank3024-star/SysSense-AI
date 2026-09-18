@@ -395,6 +395,10 @@ export default function Dashboard() {
                 <span>Disk impact</span>
                 <span>{health.breakdown.disk_impact?.toFixed(1)}</span>
               </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#94a3b8', marginBottom: '4px' }}>
+                <span>Alert penalty</span>
+                <span>{health.breakdown.alert_penalty?.toFixed(1)}</span>
+              </div>
             </div>
           )}
         </div>
