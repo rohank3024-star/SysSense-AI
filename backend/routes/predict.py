@@ -238,6 +238,11 @@ def _get_anomaly_status(cpu, ram, disk):
             "anomaly_score": round(float(score), 4),
             "severity": severity,
             "details": details,
+            "current_metrics": {
+                "cpu": round(float(cpu), 1),
+                "ram": round(float(ram), 1),
+                "disk": round(float(disk), 1),
+            },
         }
     except Exception as e:
         return {"is_anomaly": False, "error": str(e)}

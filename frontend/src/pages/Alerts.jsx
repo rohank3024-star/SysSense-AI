@@ -45,7 +45,7 @@ export default function Alerts() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5000);
+    const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -165,8 +165,22 @@ export default function Alerts() {
                 <p>
                   {anomaly.is_anomaly
                     ? anomaly.details?.join('; ') || 'Unusual pattern detected'
-                    : 'No anomalies detected by the ML model'}
+                    : 'The current combination of system metrics is consistent with patterns considered normal by the trained ML model.'}
                 </p>
+
+                {anomaly.current_metrics && (
+                  <div style={{
+                    display: 'flex',
+                    gap: '16px',
+                    marginTop: '8px',
+                    fontSize: '0.75rem',
+                    color: '#94a3b8'
+                  }}>
+                    <span>CPU: {anomaly.current_metrics.cpu}%</span>
+                    <span>RAM: {anomaly.current_metrics.ram}%</span>
+                    <span>Disk: {anomaly.current_metrics.disk}%</span>
+                  </div>
+                )}
                 <p style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
                   Score: {anomaly.anomaly_score} (lower = more anomalous)
                 </p>
