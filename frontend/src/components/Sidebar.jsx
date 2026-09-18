@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 
 const navItems = [
   { path: '/',           label: 'Dashboard',      icon: '📊' },
@@ -9,6 +10,17 @@ const navItems = [
 ];
 
 export default function Sidebar() {
+  const [theme, setTheme] = useState('dark');
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((currentTheme) =>
+      currentTheme === 'dark' ? 'light' : 'dark'
+    );
+  };
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -36,6 +48,21 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
+
+      <div className="theme-toggle-container">
+        <button
+          className="theme-toggle"
+          onClick={toggleTheme}
+          type="button"
+        >
+          <span className="theme-toggle-icon">
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </span>
+          <span>
+            {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+          </span>
+        </button>
+      </div>
 
       <div className="sidebar-footer">
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
