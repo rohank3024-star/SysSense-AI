@@ -50,6 +50,12 @@ def _try_load_models():
         if os.path.exists(cpu_path) and os.path.exists(ram_path):
             _cpu_model = joblib.load(cpu_path)
             _ram_model = joblib.load(ram_path)
+            # Training uses all available workers for speed.  At API inference
+            # time that can make joblib spawn child processes, which is blocked
+            # in some Windows environments and causes an unnecessary fallback
+            # to the naive baseline.  One worker is ample for a single row.
+            _cpu_model.n_jobs = 1
+            _ram_model.n_jobs = 1
             _model_loaded = True
             print(f"[OK] ML models loaded from {ML_MODELS_DIR}")
         else:

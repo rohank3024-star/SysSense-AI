@@ -145,8 +145,8 @@ def get_metrics_aggregated(hours=24, bucket_minutes=60):
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT
-                 strftime('%%Y-%%m-%%dT%%H:', timestamp) ||
-                 printf('%%02d', (CAST(strftime('%%M', timestamp) AS INT) / ?) * ?) AS bucket,
+                 strftime('%Y-%m-%dT%H:', timestamp) ||
+                 printf('%02d', (CAST(strftime('%M', timestamp) AS INT) / ?) * ?) AS bucket,
                  AVG(cpu_percent) AS avg_cpu,
                  AVG(ram_percent) AS avg_ram,
                  AVG(disk_percent) AS avg_disk,
