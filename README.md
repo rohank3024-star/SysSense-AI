@@ -188,13 +188,33 @@ Supports user-configurable **Dark/Light theme switching** across the dashboard, 
 
 ## 🤖 Machine Learning
 
+### Preprocessing and feature engineering
+
+The forecasting pipeline orders the mapped metric records chronologically,
+converts timestamps, creates CPU/RAM targets six samples ahead, and removes
+incomplete rows introduced by lag, rolling-window, and future-target
+operations. It uses a chronological 80:20 train/test split, not a random
+shuffle. The 27 inputs include current resource values; CPU/RAM lags; 5/10
+sample moving averages; deltas; rolling volatility; network rates/latency;
+OS metrics; and hour/minute features.
+
+The current mapped benchmark has derived 5-second timestamps and derived
+network-rate fields. It must not be represented as live collected data.
+
 ### Dataset
-Instead of waiting months to collect training data, we use a **synthetic system performance dataset** that mimics patterns from public datasets (Google Cluster Trace, Azure VM Performance Dataset). The model is trained **once** on this dataset.
+The repository contains a 10,000-row source CSV and a mapped 10,000-row
+training CSV. The project attributes the source to Kaggle's [*IT System
+Performance & Resource Metrics* dataset](https://www.kaggle.com/datasets/freshersstaff/it-system-performance-and-resource-metrics).
+The mapping code generates timestamps at five-second intervals and derives
+network sent/received values from latency with seeded noise. These records are
+a mapped benchmark, not live telemetry; the assumed 30-second target corresponds
+to six rows. The exact downloaded dataset version and its licence are not
+recorded in this repository; verify both before external publication.
 
 ### Prediction Model — Machine Learning
 - **Algorithm:** Random Forest Regressor
-- **Predicts:** CPU and RAM usage 30 seconds ahead
-- **Features:** Current values, lag features, moving averages, rate of change, time features
+- **Predicts:** CPU and RAM usage six records ahead (nominally 30 seconds in this mapped dataset)
+- **Features:** 27 inputs covering current metrics, lags, moving averages, deltas, volatility, network/system telemetry and time
 - **Evaluation:** Compared against naive baseline (predicted = current)
 
 ### Prediction Model — Deep Learning
@@ -202,13 +222,41 @@ Instead of waiting months to collect training data, we use a **synthetic system 
 - **Framework:** PyTorch
 - **Architecture:** LSTM(128) → LSTM(64) → Dense(32) → Output
 - **Input:** Sliding window of 10 consecutive timesteps
-- **Advantage:** Captures temporal dependencies and sequential patterns that tree-based models treat as independent samples
-- **Comparison:** Evaluated against both Random Forest and naive baseline
+- **Purpose:** Processes a sequence of feature rows for CPU/RAM regression
 
 ### Anomaly Detection
 - **Algorithm:** Isolation Forest
 - **Detects:** Unusual system behavior patterns, resource spikes, per-process anomalies
 - **Example:** "Warning: Chrome is consuming unusually high CPU"
+
+### Current evaluation (honest baseline)
+
+CPU/RAM forecasting is regression, so an **accuracy percentage is not
+applicable**. The saved chronological test evaluation reports:
+
+| Target | MAE | RMSE | R² | MAE improvement vs. persistence baseline |
+|---|---:|---:|---:|---:|
+| CPU (nominal 30 s horizon) | 23.0136 | 26.8750 | -0.0057 | 26.50% |
+| RAM (nominal 30 s horizon) | 22.6491 | 26.1806 | -0.0105 | 25.37% |
+
+The negative R² scores mean these saved models did not outperform the test-set
+mean under the R² criterion. The lower MAE than the persistence baseline is
+encouraging but does not establish reliable operational forecasting. These are
+exploratory results, not a production-performance claim.
+
+The LSTM's saved MAE/RMSE/R² are 22.9971/26.8106/−0.0004 for CPU and
+22.6620/26.2191/−0.0139 for RAM. These values are not a strictly matched
+comparison with the Random Forest: the LSTM input window shortens its test
+partition, and the LSTM code also uses its test loader for early stopping.
+Treat them as implementation-stage measurements, not an unbiased ranking.
+
+For anomaly detection, a chronological holdout used an Isolation Forest with
+200 trees (`contamination=0.01`, `random_state=42`), fit on the first 8,000
+mapped rows and evaluated on the final 2,000 using 11 features. It produced
+97.95% accuracy, 25.00% precision, 25.93% recall and 25.45% F1; the confusion
+matrix is TN=1,952, FP=21, FN=20, TP=7. An all-normal classifier reaches
+98.65% accuracy on this imbalanced test set. Thus, accuracy alone is not
+evidence of useful anomaly detection; the current recall is low.
 
 ---
 
