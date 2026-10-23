@@ -100,11 +100,7 @@ cd backend
 uvicorn main:app --reload
 ```
 
-Backend runs at:
-
-```
-http://127.0.0.1:8000
-```
+Backend API documentation is available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
 ### 6. Start the frontend
 
