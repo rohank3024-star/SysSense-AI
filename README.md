@@ -179,25 +179,33 @@ Metrics are saved every five seconds, matching the feature cadence used by the d
 
 Stores metric history in SQLite for graphs and monitoring. A separate forecast log stores each prediction, its expected target time, and the later observed value for live validation.
 
-### Module 3: Dataset-Trained ML and DL Forecasting
+### Module 3: Random Forest Prediction
 
-Random Forest and LSTM models are trained on a system-metrics dataset using the same collector-compatible feature schema used at runtime. They forecast CPU and RAM usage approximately 30 seconds ahead.
+Random Forest models are trained on the system-metrics dataset using the 24-feature collector-compatible schema. They forecast CPU and RAM usage approximately 30 seconds ahead and are compared with a persistence baseline.
 
-The prediction screen also shows a persistence baseline (the current value used as a simple forecast) so that the trained model is not presented without comparison.
+### Module 4: FastAPI Live Prediction and Evaluation API
 
-### Module 4: Live Forecast Evaluation
+FastAPI loads the saved Random Forest, LSTM, and anomaly artifacts and exposes live prediction endpoints. Every fresh forecast is recorded with its expected target time; after the horizon has elapsed, it is matched with the actual collected value to report live MAE, RMSE, R², matched forecasts, and the share within ±5 percentage points.
 
-Once the forecast horizon has elapsed, the backend matches predictions with actual collected measurements. It reports live MAE, RMSE, R², matched forecast count, and the share of forecasts within ±5 percentage points.
+### Module 5: Anomaly Detection and Process Signals
 
-### Module 5: Anomaly and Process Signals
+An Isolation Forest model produces an experimental anomaly signal from collector-compatible features. It is intentionally displayed separately from system threshold alerts and process threshold signals, which are transparent rule-based checks.
 
-An Isolation Forest model produces an experimental anomaly signal from collector-compatible features. Its output is shown separately from normal system threshold alerts.
+### Module 6: Recommendation Engine
 
-Process alerts are transparent rule-based signals (for example, high CPU or high memory by a process); they are not represented as ML anomaly predictions.
+Generates actionable, rule-based optimization suggestions from current CPU, RAM, disk, and top-process conditions. Recommendations are not presented as predictions made by the ML models.
 
-### Module 6: Dashboard and Alerts
+### Module 7: React Dashboard and Alerts
 
-The React dashboard displays live resource values, trends, model forecasts, forecast evaluation, system threshold alerts, and process signals. Live measurements and predictions are explicitly labeled differently.
+The React dashboard displays live resource values, historical trends, forecasts, forecast evaluation, system threshold alerts, and process signals. Live measurements and experimental predictions are explicitly labeled differently.
+
+### Module 8: System Health Score
+
+Calculates a weighted 0–100 health score from current CPU, RAM, disk, and active system alerts. It is a transparent rule-based indicator, not an ML accuracy score.
+
+### Module 9: Deep Learning LSTM Forecasting
+
+Two stacked LSTM regression models use a 10-timestep window of the same 24 collector-compatible features to forecast CPU and RAM approximately 30 seconds ahead. Training uses chronological train/validation/test partitions with embargo gaps and validation-only early stopping.
 
 ---
 
