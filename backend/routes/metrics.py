@@ -6,6 +6,7 @@ when the dashboard fires 4 API requests in parallel.
 """
 from fastapi import APIRouter, Query
 from database import get_recent_metrics, get_metrics_since, get_metrics_aggregated, get_metrics_count
+from services.live_metrics import get_live_cpu_percent
 import psutil
 import platform
 import time
@@ -34,9 +35,9 @@ def _get_live_snapshot():
     boot = psutil.boot_time()
     uptime_seconds = time.time() - boot
 
-    # cpu_percent with interval=0 uses the delta since last call (non-blocking)
-    # The first call returns 0.0 but subsequent calls are fast and accurate.
-    cpu = psutil.cpu_percent(interval=0)
+    # This uses a short sampled interval (and cross-endpoint cache) so a
+    # first request cannot display psutil's misleading 0.0% sentinel value.
+    cpu = get_live_cpu_percent()
 
     data = {
         "cpu_percent": cpu,
@@ -73,10 +74,6 @@ def _get_live_snapshot():
         _cache["timestamp"] = time.time()
 
     return data
-
-
-# Prime the CPU percent counter on import so the first request isn't 0
-psutil.cpu_percent(interval=0)
 
 
 @router.get("/current")

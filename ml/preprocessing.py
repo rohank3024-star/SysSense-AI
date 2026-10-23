@@ -1,232 +1,195 @@
-"""
-SysSense AI — Data Preprocessing Module
+"""Dataset loading and collector-compatible forecasting features.
 
-Loads data from the Kaggle IT System Performance & Resource Metrics dataset
-or the local SQLite database, engineers features, and prepares train/test
-splits for ML model training.
-
-The PUBLIC DATASET approach (default):
-    The model is trained ONCE on the Kaggle dataset.
-    During demonstrations, the application collects live metrics using psutil
-    and uses the trained model for predictions.
-
-Features engineered:
-    - Current CPU, RAM, Disk
-    - Lag features (previous values at t-1, t-3, t-5)
-    - Moving averages (5-point, 10-point)
-    - Rate of change (delta between consecutive readings)
-    - Hour of day, minute of hour
-    - Network latency, context switches, temperature
-    - Cache miss rate, power consumption
-
-Labels:
-    - CPU value ~30 seconds later (~7-8 rows ahead at 5s intervals)
-    - RAM value ~30 seconds later
+The project trains on the Kaggle-derived system-metrics dataset as required.
+The feature contract deliberately contains only data that ``backend/collector``
+stores, so a deployed model never receives invented zero values for missing
+training features.
 """
 import os
 import sys
-import pandas as pd
-import numpy as np
-from datetime import datetime
 
-# Allow importing database.py from sibling directory
+import numpy as np
+import pandas as pd
+
+
+# Allow optional local-database training from the backend package.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-# Path to the public dataset CSV
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 PUBLIC_DATASET_PATH = os.path.join(DATA_DIR, "system_metrics_dataset.csv")
 KAGGLE_DATASET_PATH = os.path.join(DATA_DIR, "Big_data_dataset.csv")
 
+FEATURE_PROFILE = "collector_compatible_v1"
+FORECAST_HORIZON_SAMPLES = 6
+COLLECTOR_INTERVAL_SECONDS = 5
+COLLECTOR_FEATURE_NAMES = [
+    "cpu_current", "ram_current", "disk_current",
+    "cpu_lag1", "ram_lag1", "cpu_lag3", "ram_lag3",
+    "cpu_lag5", "ram_lag5",
+    "cpu_ma5", "cpu_ma10", "ram_ma5", "ram_ma10",
+    "cpu_delta", "ram_delta", "disk_delta",
+    "cpu_std5", "ram_std5",
+    "net_sent_rate", "net_recv_rate",
+    "thread_count", "process_count",
+    "hour", "minute",
+]
+
+
+def get_feature_contract():
+    """Return the versioned schema shared by training and live inference."""
+    return {
+        "profile": FEATURE_PROFILE,
+        "feature_names": list(COLLECTOR_FEATURE_NAMES),
+        "horizon_samples": FORECAST_HORIZON_SAMPLES,
+        "assumed_sample_interval_seconds": COLLECTOR_INTERVAL_SECONDS,
+        "nominal_horizon_seconds": FORECAST_HORIZON_SAMPLES * COLLECTOR_INTERVAL_SECONDS,
+        "source": "collector metrics table",
+    }
+
 
 def load_public_dataset():
-    """
-    Load the Kaggle IT System Performance & Resource Metrics dataset.
-
-    Tries the mapped CSV first (system_metrics_dataset.csv), falls back
-    to loading and mapping the raw Kaggle CSV (Big_data_dataset.csv).
-
-    Returns:
-        pandas DataFrame or None if no dataset exists.
-    """
-    # Try pre-processed mapped file first
+    """Load the mapped Kaggle dataset, generating it from the raw CSV if needed."""
     if os.path.exists(PUBLIC_DATASET_PATH):
-        df = pd.read_csv(PUBLIC_DATASET_PATH)
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df = df.sort_values("id").reset_index(drop=True)
-        print(f"Loaded {len(df)} rows from mapped Kaggle dataset")
-        print(f"  Time range: {df['timestamp'].min()} to {df['timestamp'].max()}")
-        return df
+        frame = pd.read_csv(PUBLIC_DATASET_PATH)
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"])
+        frame = frame.sort_values("id").reset_index(drop=True)
+        print(f"Loaded {len(frame)} rows from mapped Kaggle dataset")
+        print(f"  Time range: {frame['timestamp'].min()} to {frame['timestamp'].max()}")
+        return frame
 
-    # Fall back to raw Kaggle CSV and map on-the-fly
     if os.path.exists(KAGGLE_DATASET_PATH):
-        print("Mapped dataset not found. Loading raw Kaggle CSV...")
+        print("Mapped dataset not found. Loading and mapping the raw Kaggle CSV...")
         from generate_dataset import generate_dataset
-        df = generate_dataset()
-        if df is not None:
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            df = df.sort_values("id").reset_index(drop=True)
-            return df
 
-    print(f"No dataset found. Please either:")
-    print(f"  1. Place Big_data_dataset.csv in {DATA_DIR}")
-    print(f"  2. Run 'python generate_dataset.py' to process it")
+        frame = generate_dataset()
+        if frame is not None:
+            frame["timestamp"] = pd.to_datetime(frame["timestamp"])
+            return frame.sort_values("id").reset_index(drop=True)
+
+    print("No dataset found. Place Big_data_dataset.csv in ml/data/ and run generate_dataset.py.")
     return None
 
 
 def load_raw_data():
-    """
-    Load all metrics from the local SQLite database into a DataFrame.
-
-    This is a FALLBACK option. The primary approach is load_public_dataset().
-    This function is kept for compatibility and for cases where you want
-    to train on locally collected data instead.
-    """
+    """Load locally collected data when an explicit local-training run is wanted."""
     try:
         from database import get_all_metrics_for_training
+
         data = get_all_metrics_for_training()
         if not data:
-            print("No data found in local database.")
+            print("No data found in the local database.")
             return None
-
-        df = pd.DataFrame(data)
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df = df.sort_values("id").reset_index(drop=True)
-        print(f"Loaded {len(df)} rows from local SQLite database")
-        print(f"  Time range: {df['timestamp'].min()} to {df['timestamp'].max()}")
-        return df
-    except Exception as e:
-        print(f"Could not load from local database: {e}")
+        frame = pd.DataFrame(data)
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"])
+        frame = frame.sort_values("id").reset_index(drop=True)
+        print(f"Loaded {len(frame)} rows from local SQLite database")
+        print(f"  Time range: {frame['timestamp'].min()} to {frame['timestamp'].max()}")
+        return frame
+    except Exception as exc:
+        print(f"Could not load local metrics: {exc}")
         return None
 
 
 def load_data(prefer_public=True):
-    """
-    Smart loader: tries the public dataset first, falls back to local DB.
-
-    Args:
-        prefer_public: If True (default), use the public dataset.
-                       If False, use the local SQLite database.
-    """
+    """Use the public dataset by default, with local DB as a fallback."""
     if prefer_public:
-        df = load_public_dataset()
-        if df is not None:
-            return df
-        print("Falling back to local database...")
-
+        frame = load_public_dataset()
+        if frame is not None:
+            return frame
+        print("Falling back to local SQLite data...")
     return load_raw_data()
 
 
-def engineer_features(df, prediction_horizon=6):
+def _counter_rate(frame, column):
+    """Compute a non-negative MB/s rate from a cumulative counter column."""
+    elapsed = frame["timestamp"].diff().dt.total_seconds().replace(0, np.nan)
+    return (frame[column].diff() / elapsed).replace([np.inf, -np.inf], np.nan).fillna(0).clip(lower=0)
+
+
+def engineer_features(frame, prediction_horizon=FORECAST_HORIZON_SAMPLES):
+    """Create the versioned collector-compatible supervised data set.
+
+    ``prediction_horizon`` is six samples by default. With the documented
+    five-second collector cadence it is a nominal 30-second forecast horizon.
     """
-    Engineer features from raw metrics.
+    required_columns = {
+        "timestamp", "cpu_percent", "ram_percent", "disk_percent",
+        "net_sent_mb", "net_recv_mb", "thread_count", "process_count",
+    }
+    missing = sorted(required_columns - set(frame.columns))
+    if missing:
+        raise ValueError(f"Dataset is missing collector-compatible columns: {missing}")
 
-    Args:
-        df: Raw metrics DataFrame
-        prediction_horizon: Number of rows ahead to predict
-                            (6 rows x ~5s = ~30 seconds ahead)
+    frame = frame.copy()
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"])
+    feature_frame = pd.DataFrame(index=frame.index)
 
-    Returns:
-        DataFrame with features and labels, ready for training.
-    """
-    feat = pd.DataFrame()
+    feature_frame["cpu_current"] = frame["cpu_percent"]
+    feature_frame["ram_current"] = frame["ram_percent"]
+    feature_frame["disk_current"] = frame["disk_percent"]
 
-    # ── Current values ────────────────────────────────────────────────
-    feat["cpu_current"] = df["cpu_percent"]
-    feat["ram_current"] = df["ram_percent"]
-    feat["disk_current"] = df["disk_percent"]
+    for lag in (1, 3, 5):
+        feature_frame[f"cpu_lag{lag}"] = frame["cpu_percent"].shift(lag)
+        feature_frame[f"ram_lag{lag}"] = frame["ram_percent"].shift(lag)
 
-    # ── Lag features ──────────────────────────────────────────────────
-    for lag in [1, 3, 5]:
-        feat[f"cpu_lag{lag}"] = df["cpu_percent"].shift(lag)
-        feat[f"ram_lag{lag}"] = df["ram_percent"].shift(lag)
+    feature_frame["cpu_ma5"] = frame["cpu_percent"].rolling(5).mean()
+    feature_frame["cpu_ma10"] = frame["cpu_percent"].rolling(10).mean()
+    feature_frame["ram_ma5"] = frame["ram_percent"].rolling(5).mean()
+    feature_frame["ram_ma10"] = frame["ram_percent"].rolling(10).mean()
+    feature_frame["cpu_delta"] = frame["cpu_percent"].diff()
+    feature_frame["ram_delta"] = frame["ram_percent"].diff()
+    feature_frame["disk_delta"] = frame["disk_percent"].diff()
+    feature_frame["cpu_std5"] = frame["cpu_percent"].rolling(5).std()
+    feature_frame["ram_std5"] = frame["ram_percent"].rolling(5).std()
+    feature_frame["net_sent_rate"] = _counter_rate(frame, "net_sent_mb")
+    feature_frame["net_recv_rate"] = _counter_rate(frame, "net_recv_mb")
+    feature_frame["thread_count"] = frame["thread_count"]
+    feature_frame["process_count"] = frame["process_count"]
+    feature_frame["hour"] = frame["timestamp"].dt.hour
+    feature_frame["minute"] = frame["timestamp"].dt.minute
 
-    # ── Moving averages ───────────────────────────────────────────────
-    feat["cpu_ma5"] = df["cpu_percent"].rolling(5).mean()
-    feat["cpu_ma10"] = df["cpu_percent"].rolling(10).mean()
-    feat["ram_ma5"] = df["ram_percent"].rolling(5).mean()
-    feat["ram_ma10"] = df["ram_percent"].rolling(10).mean()
+    feature_frame["label_cpu_30s"] = frame["cpu_percent"].shift(-prediction_horizon)
+    feature_frame["label_ram_30s"] = frame["ram_percent"].shift(-prediction_horizon)
+    feature_frame = feature_frame.dropna().reset_index(drop=True)
 
-    # ── Rate of change (delta) ────────────────────────────────────────
-    feat["cpu_delta"] = df["cpu_percent"].diff()
-    feat["ram_delta"] = df["ram_percent"].diff()
-    feat["disk_delta"] = df["disk_percent"].diff()
-
-    # ── Volatility (rolling std) ──────────────────────────────────────
-    feat["cpu_std5"] = df["cpu_percent"].rolling(5).std()
-    feat["ram_std5"] = df["ram_percent"].rolling(5).std()
-
-    # ── Network features ──────────────────────────────────────────────
-    if "net_sent_mb" in df.columns and "net_recv_mb" in df.columns:
-        feat["net_sent_rate"] = df["net_sent_mb"].diff().fillna(0).clip(lower=0)
-        feat["net_recv_rate"] = df["net_recv_mb"].diff().fillna(0).clip(lower=0)
-
-    # Network latency (from Kaggle dataset)
-    if "network_latency_ms" in df.columns:
-        feat["network_latency"] = df["network_latency_ms"]
-
-    # ── Extra features from Kaggle dataset ────────────────────────────
-    if "context_switches" in df.columns:
-        feat["context_switches"] = df["context_switches"]
-
-    if "cache_miss_rate" in df.columns:
-        feat["cache_miss_rate"] = df["cache_miss_rate"]
-
-    if "temperature" in df.columns:
-        feat["temperature"] = df["temperature"]
-
-    if "power_consumption" in df.columns:
-        feat["power_consumption"] = df["power_consumption"]
-
-    # ── Time features ─────────────────────────────────────────────────
-    feat["hour"] = df["timestamp"].dt.hour
-    feat["minute"] = df["timestamp"].dt.minute
-
-    # ── Labels: values ~30 seconds in the future ──────────────────────
-    feat["label_cpu_30s"] = df["cpu_percent"].shift(-prediction_horizon)
-    feat["label_ram_30s"] = df["ram_percent"].shift(-prediction_horizon)
-
-    # Drop rows with NaN (from shifting and rolling)
-    feat = feat.dropna().reset_index(drop=True)
-    print(f"After feature engineering: {len(feat)} usable rows")
-
-    return feat
+    # Guard against accidental training/inference order drift.
+    ordered_columns = COLLECTOR_FEATURE_NAMES + ["label_cpu_30s", "label_ram_30s"]
+    feature_frame = feature_frame[ordered_columns]
+    print(f"After feature engineering: {len(feature_frame)} usable rows")
+    print(f"Feature profile: {FEATURE_PROFILE} ({len(COLLECTOR_FEATURE_NAMES)} live-compatible inputs)")
+    return feature_frame
 
 
-def prepare_train_test(df, test_ratio=0.2):
-    """
-    Split into train/test chronologically (NOT randomly — time series!).
+def prepare_train_test(feature_frame, test_ratio=0.2):
+    """Create a chronological split with a six-sample embargo at its boundary."""
+    if not 0 < test_ratio < 1:
+        raise ValueError("test_ratio must be between 0 and 1")
 
-    Returns:
-        X_train, X_test, y_train_cpu, y_test_cpu, y_train_ram, y_test_ram, feature_names
-    """
-    feature_cols = [c for c in df.columns if not c.startswith("label_")]
-    label_cpu = "label_cpu_30s"
-    label_ram = "label_ram_30s"
+    split_index = int(len(feature_frame) * (1 - test_ratio))
+    train_end = split_index - FORECAST_HORIZON_SAMPLES
+    if train_end <= 0:
+        raise ValueError("Not enough rows for the requested split and forecast embargo")
+    feature_names = list(COLLECTOR_FEATURE_NAMES)
+    X_train = feature_frame[feature_names].iloc[:train_end].values
+    X_test = feature_frame[feature_names].iloc[split_index:].values
+    y_train_cpu = feature_frame["label_cpu_30s"].iloc[:train_end].values
+    y_test_cpu = feature_frame["label_cpu_30s"].iloc[split_index:].values
+    y_train_ram = feature_frame["label_ram_30s"].iloc[:train_end].values
+    y_test_ram = feature_frame["label_ram_30s"].iloc[split_index:].values
 
-    split_idx = int(len(df) * (1 - test_ratio))
-
-    X_train = df[feature_cols].iloc[:split_idx].values
-    X_test = df[feature_cols].iloc[split_idx:].values
-    y_train_cpu = df[label_cpu].iloc[:split_idx].values
-    y_test_cpu = df[label_cpu].iloc[split_idx:].values
-    y_train_ram = df[label_ram].iloc[:split_idx].values
-    y_test_ram = df[label_ram].iloc[split_idx:].values
-
-    print(f"Train: {len(X_train)} rows | Test: {len(X_test)} rows")
-    print(f"Features: {feature_cols}")
-
-    return (X_train, X_test, y_train_cpu, y_test_cpu,
-            y_train_ram, y_test_ram, feature_cols)
+    print(f"Train: {len(X_train)} rows | Gap: {FORECAST_HORIZON_SAMPLES} rows | Test: {len(X_test)} rows")
+    print(f"Features: {feature_names}")
+    return (
+        X_train, X_test, y_train_cpu, y_test_cpu,
+        y_train_ram, y_test_ram, feature_names,
+    )
 
 
 if __name__ == "__main__":
-    print("=== SysSense AI -- Preprocessing ===\n")
-    df = load_data(prefer_public=True)
-    if df is not None:
-        feat = engineer_features(df)
-        print(f"\nFeature columns: {list(feat.columns)}")
-        print(f"\nSample row:\n{feat.iloc[0].to_dict()}")
-
-        result = prepare_train_test(feat)
-        X_train, X_test = result[0], result[1]
-        print(f"\nReady for training. X_train shape: {X_train.shape}")
+    print("=== SysSense AI - Collector-Compatible Preprocessing ===\n")
+    dataset = load_data(prefer_public=True)
+    if dataset is not None:
+        features = engineer_features(dataset)
+        print(f"\nFeature columns: {list(features.columns)}")
+        prepared = prepare_train_test(features)
+        print(f"\nReady for training. X_train shape: {prepared[0].shape}")

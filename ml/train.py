@@ -19,10 +19,28 @@ import os
 import numpy as np
 import joblib
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
-from preprocessing import load_data, engineer_features, prepare_train_test
-from evaluation import evaluate_model, compare_with_baseline, generate_report
+try:
+    from .preprocessing import (
+        FORECAST_HORIZON_SAMPLES,
+        engineer_features,
+        get_feature_contract,
+        load_data,
+        prepare_train_test,
+    )
+except ImportError:
+    from preprocessing import (
+        FORECAST_HORIZON_SAMPLES,
+        engineer_features,
+        get_feature_contract,
+        load_data,
+        prepare_train_test,
+    )
+try:
+    from .evaluation import evaluate_model, compare_with_baseline, generate_report
+except ImportError:
+    from evaluation import evaluate_model, compare_with_baseline, generate_report
 
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
@@ -44,12 +62,16 @@ def train_model(X_train, y_train, model_name="CPU"):
         "min_samples_leaf": [1, 2],
     }
 
-    rf = RandomForestRegressor(random_state=42, n_jobs=-1)
+    # A single training worker avoids Windows child-process permission errors
+    # and makes a faculty reproduction run deterministic.
+    rf = RandomForestRegressor(random_state=42, n_jobs=1)
 
-    # GridSearchCV with 3-fold cross-validation
+    # Time-series validation keeps every validation fold after its training
+    # fold and leaves a horizon-sized gap to avoid target overlap.
+    time_series_cv = TimeSeriesSplit(n_splits=3, gap=FORECAST_HORIZON_SAMPLES)
     grid_search = GridSearchCV(
-        rf, param_grid, cv=3, scoring="neg_mean_absolute_error",
-        verbose=1, n_jobs=-1,
+        rf, param_grid, cv=time_series_cv, scoring="neg_mean_absolute_error",
+        verbose=1, n_jobs=1,
     )
     grid_search.fit(X_train, y_train)
 
@@ -141,19 +163,25 @@ def main():
         "cpu_model": cpu_model,
         "ram_model": ram_model,
         "feature_names": feature_names,
+        "feature_contract": get_feature_contract(),
         "cpu_metrics": cpu_metrics,
         "ram_metrics": ram_metrics,
         "trained_on": "kaggle_it_system_performance",
     }
     joblib.dump(combined, combined_path)
 
+    feature_contract = get_feature_contract()
     joblib.dump({
         "feature_names": feature_names,
+        "feature_profile": feature_contract["profile"],
+        "feature_contract": feature_contract,
         "cpu_metrics": cpu_metrics,
         "ram_metrics": ram_metrics,
         "cpu_comparison": cpu_comparison,
         "ram_comparison": ram_comparison,
         "trained_on": "kaggle_it_system_performance",
+        "split_strategy": "chronological_80_20_with_6_sample_embargo",
+        "model_selection": "TimeSeriesSplit(n_splits=3, gap=6)",
     }, meta_path)
 
     print(f"\n[OK] CPU model saved to {cpu_path}")

@@ -1,58 +1,43 @@
-"""
-SysSense AI — Model Evaluation Module
+"""Evaluation helpers for SysSense regression models.
 
-Computes MAE, RMSE, R² score and generates comparison
-reports between ML predictions and the naive baseline.
+CPU and RAM forecasts are regression outputs. This module deliberately uses
+MAE, RMSE, and R2 rather than a classification-style accuracy percentage.
 """
 import os
+
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
 def evaluate_model(model, X_test, y_test, label=""):
-    """
-    Evaluate a trained model on the test set.
-
-    Returns dict with MAE, RMSE, R².
-    """
+    """Evaluate a fitted regressor on a held-out test partition."""
     y_pred = model.predict(X_test)
     mae = mean_absolute_error(y_test, y_pred)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
     r2 = r2_score(y_test, y_pred)
 
-    print(f"\n{label} Model Performance:")
+    print(f"\n{label} model performance:")
     print(f"  MAE:  {mae:.4f}")
     print(f"  RMSE: {rmse:.4f}")
-    print(f"  R²:   {r2:.4f}")
-
+    print(f"  R2:   {r2:.4f}")
     return {"mae": mae, "rmse": rmse, "r2": r2}
 
 
 def compare_with_baseline(model, X_test, y_test, naive_predictions, label=""):
-    """
-    Compare ML model against naive baseline (predict current = future).
-    """
+    """Compare a regressor with a persistence (current-value) baseline."""
     ml_pred = model.predict(X_test)
-
     ml_mae = mean_absolute_error(y_test, ml_pred)
     naive_mae = mean_absolute_error(y_test, naive_predictions)
-    improvement = ((naive_mae - ml_mae) / naive_mae) * 100 if naive_mae > 0 else 0
-
+    improvement = ((naive_mae - ml_mae) / naive_mae) * 100 if naive_mae else 0.0
     ml_rmse = np.sqrt(mean_squared_error(y_test, ml_pred))
     naive_rmse = np.sqrt(mean_squared_error(y_test, naive_predictions))
-
     ml_r2 = r2_score(y_test, ml_pred)
     naive_r2 = r2_score(y_test, naive_predictions)
 
-    print(f"\n{'-' * 50}")
-    print(f"{label} -- ML vs Naive Baseline Comparison")
-    print(f"{'-' * 50}")
-    print(f"  {'Metric':<10} {'ML Model':>12} {'Naive':>12} {'Improvement':>14}")
-    print(f"  {'-'*48}")
-    print(f"  {'MAE':<10} {ml_mae:>12.4f} {naive_mae:>12.4f} {improvement:>13.1f}%")
-    print(f"  {'RMSE':<10} {ml_rmse:>12.4f} {naive_rmse:>12.4f}")
-    print(f"  {'R2':<10} {ml_r2:>12.4f} {naive_r2:>12.4f}")
-
+    print(f"\n{'-' * 50}\n{label} - model versus persistence baseline\n{'-' * 50}")
+    print(f"  MAE: model {ml_mae:.4f}, baseline {naive_mae:.4f}, lower by {improvement:.1f}%")
+    print(f"  RMSE: model {ml_rmse:.4f}, baseline {naive_rmse:.4f}")
+    print(f"  R2: model {ml_r2:.4f}, baseline {naive_r2:.4f}")
     return {
         "ml_mae": ml_mae,
         "naive_mae": naive_mae,
@@ -66,62 +51,60 @@ def compare_with_baseline(model, X_test, y_test, naive_predictions, label=""):
 
 def generate_report(cpu_metrics, ram_metrics, cpu_comparison, ram_comparison,
                     feature_names, feature_importances):
-    """
-    Generate a markdown evaluation report.
-    Save to ml/evaluation_report.md
-    """
+    """Write the dataset hold-out report with defensible interpretation."""
     report_path = os.path.join(os.path.dirname(__file__), "evaluation_report.md")
-
-    # Sort feature importances
     sorted_features = sorted(
-        zip(feature_names, feature_importances),
-        key=lambda x: x[1], reverse=True,
+        zip(feature_names, feature_importances), key=lambda item: item[1], reverse=True,
     )
 
-    report = f"""# SysSense AI — ML Evaluation Report
+    report = f"""# SysSense AI - Random Forest Evaluation
 
-## Model: Random Forest Regressor
+## Evaluation protocol
 
-### CPU Prediction (30s ahead)
+- Training source: mapped Kaggle IT System Performance & Resource Metrics dataset
+- Input schema: {len(feature_names)} collector-compatible features
+- Forecast target: six 5-second samples ahead (nominal 30 seconds)
+- Split: chronological 80/20 holdout with a six-sample embargo
+- Model selection: time-series cross-validation with the same embargo
 
-| Metric | ML Model | Naive Baseline | Improvement |
-|--------|----------|----------------|-------------|
-| MAE    | {cpu_metrics['mae']:.4f} | {cpu_comparison['naive_mae']:.4f} | {cpu_comparison['improvement_percent']:.1f}% |
-| RMSE   | {cpu_metrics['rmse']:.4f} | {cpu_comparison['naive_rmse']:.4f} | — |
-| R²     | {cpu_metrics['r2']:.4f} | {cpu_comparison['naive_r2']:.4f} | — |
+CPU/RAM forecasting is regression. It must be assessed with MAE, RMSE, and
+R2, rather than classification accuracy. The model was trained on a dataset;
+the dashboard separately records forecasts and compares them with live
+collector readings after the horizon has elapsed.
 
-### RAM Prediction (30s ahead)
+## CPU prediction (nominal 30-second horizon)
 
-| Metric | ML Model | Naive Baseline | Improvement |
-|--------|----------|----------------|-------------|
-| MAE    | {ram_metrics['mae']:.4f} | {ram_comparison['naive_mae']:.4f} | {ram_comparison['improvement_percent']:.1f}% |
-| RMSE   | {ram_metrics['rmse']:.4f} | {ram_comparison['naive_rmse']:.4f} | — |
-| R²     | {ram_metrics['r2']:.4f} | {ram_comparison['naive_r2']:.4f} | — |
+| Metric | Random Forest | Persistence baseline | Difference |
+|--------|--------------:|---------------------:|-----------:|
+| MAE    | {cpu_metrics['mae']:.4f} | {cpu_comparison['naive_mae']:.4f} | {cpu_comparison['improvement_percent']:.1f}% lower MAE |
+| RMSE   | {cpu_metrics['rmse']:.4f} | {cpu_comparison['naive_rmse']:.4f} | - |
+| R2     | {cpu_metrics['r2']:.4f} | {cpu_comparison['naive_r2']:.4f} | - |
 
-### Top Feature Importances (CPU Model)
+## RAM prediction (nominal 30-second horizon)
+
+| Metric | Random Forest | Persistence baseline | Difference |
+|--------|--------------:|---------------------:|-----------:|
+| MAE    | {ram_metrics['mae']:.4f} | {ram_comparison['naive_mae']:.4f} | {ram_comparison['improvement_percent']:.1f}% lower MAE |
+| RMSE   | {ram_metrics['rmse']:.4f} | {ram_comparison['naive_rmse']:.4f} | - |
+| R2     | {ram_metrics['r2']:.4f} | {ram_comparison['naive_r2']:.4f} | - |
+
+## Top CPU feature importances
 
 | Rank | Feature | Importance |
 |------|---------|------------|
 """
-    for i, (name, imp) in enumerate(sorted_features[:10], 1):
-        report += f"| {i} | {name} | {imp:.4f} |\n"
+    for rank, (name, importance) in enumerate(sorted_features[:10], start=1):
+        report += f"| {rank} | {name} | {importance:.4f} |\n"
 
     report += """
-### Key Takeaways
+## Interpretation for presentation
 
-1. The ML model should outperform the naive baseline, proving that historical patterns contain predictive signal.
-2. Feature importances reveal which metrics most influence future CPU/RAM load.
-3. Moving averages and lag features capture momentum and trends that raw current values miss.
-
-### Conclusion
-
-The Random Forest model forecasts CPU/RAM usage 30s ahead, outperforming the naive baseline by {cpu_improvement}% (CPU) and {ram_improvement}% (RAM) in MAE. This confirms that engineered lag and rolling-window features capture meaningful temporal patterns in system metrics.
-""".format(
-        cpu_improvement=cpu_comparison['improvement_percent'],
-        ram_improvement=ram_comparison['improvement_percent'],
-    )
-
-    with open(report_path, "w") as f:
-        f.write(report)
-
+The Random Forest has lower held-out MAE than the persistence baseline on this
+dataset. Its negative R2 values mean the task remains difficult and its
+dataset result should not be described as a guaranteed live-machine accuracy.
+Use the dashboard's **Live Forecast Evaluation** table after sufficient
+forecasts have matured to report measured local performance.
+"""
+    with open(report_path, "w", encoding="utf-8") as report_file:
+        report_file.write(report)
     print(f"\n[OK] Evaluation report saved to {report_path}")

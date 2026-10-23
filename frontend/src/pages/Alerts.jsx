@@ -6,7 +6,7 @@ export default function Alerts() {
   const [history, setHistory] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
   const [anomaly, setAnomaly] = useState(null);
-  const [processAnomalies, setProcessAnomalies] = useState([]);
+  const [processSignals, setProcessSignals] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
@@ -37,7 +37,7 @@ export default function Alerts() {
     try {
       const predRes = await getPrediction();
       setAnomaly(predRes.data?.anomaly || null);
-      setProcessAnomalies(predRes.data?.process_anomalies || []);
+      setProcessSignals(predRes.data?.process_anomalies || []);
     } catch (err) {
       console.warn('anomaly data failed:', err.message);
     }
@@ -71,15 +71,16 @@ export default function Alerts() {
     );
   }
 
-  // Separate threshold alerts from process alerts
-  const thresholdAlerts = (alerts.alerts || []).filter(a => a.source !== 'anomaly_detection');
-  const processAlerts = (alerts.alerts || []).filter(a => a.source === 'anomaly_detection');
+  // The alerts endpoint emits transparent rules. The experimental ML signal
+  // comes from the prediction endpoint and is shown separately below.
+  const systemAlerts = (alerts.alerts || []).filter(a => !a.source || a.source === 'threshold');
+  const processRuleAlerts = (alerts.alerts || []).filter(a => a.source === 'process_threshold');
 
   return (
     <div>
       <div className="page-header animate-in">
         <h2>Alerts & Recommendations</h2>
-        <p>Threshold-based warnings, anomaly detection, and actionable optimization suggestions</p>
+        <p>Live threshold rules, an experimental ML anomaly signal, and actionable optimization suggestions</p>
       </div>
 
       <div className="metric-cards animate-in animate-in-delay-1">
@@ -103,11 +104,11 @@ export default function Alerts() {
         </div>
         <div className="card" style={{ textAlign: 'center' }}>
           <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 600 }}>Anomaly Status</div>
-          <div style={{ fontSize: '2.5rem', fontWeight: 800, color: anomaly?.is_anomaly ? '#ef4444' : '#00e676' }}>
-            {anomaly?.is_anomaly ? '⚠️' : '✅'}
+          <div style={{ fontSize: '2.5rem', fontWeight: 800, color: anomaly?.available === false ? '#94a3b8' : anomaly?.is_anomaly ? '#ef4444' : '#00e676' }}>
+            {anomaly?.available === false ? '—' : anomaly?.is_anomaly ? '⚠️' : '✅'}
           </div>
           <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
-            {anomaly?.is_anomaly ? anomaly.severity : 'Normal'}
+            {anomaly?.available === false ? 'Unavailable' : anomaly?.is_anomaly ? anomaly.severity : 'No signal'}
           </div>
         </div>
       </div>
@@ -116,10 +117,10 @@ export default function Alerts() {
         {/* ── Threshold Alerts ──────────────────────────────────── */}
         <div className="card">
           <div className="chart-header">
-            <span className="chart-title">Threshold Alerts</span>
+            <span className="chart-title">System Threshold Alerts</span>
           </div>
-          {thresholdAlerts.length > 0 ? (
-            thresholdAlerts.map((alert, i) => (
+          {systemAlerts.length > 0 ? (
+            systemAlerts.map((alert, i) => (
               <div key={i} className={`alert-card ${alert.level}`}>
                 <span className="alert-icon">{getAlertIcon(alert.level)}</span>
                 <div className="alert-content">
@@ -157,15 +158,17 @@ export default function Alerts() {
 
           {/* ML Anomaly Status */}
           {anomaly && (
-            <div className={`alert-card ${anomaly.is_anomaly ? (anomaly.severity === 'critical' ? 'critical' : 'warning') : 'info'}`}
+            <div className={`alert-card ${anomaly.available === false ? 'info' : anomaly.is_anomaly ? (anomaly.severity === 'critical' ? 'critical' : 'warning') : 'info'}`}
                  style={{ marginBottom: '12px' }}>
               <span className="alert-icon">{anomaly.is_anomaly ? '🔴' : '🟢'}</span>
               <div className="alert-content">
-                <h4>{anomaly.is_anomaly ? `Anomaly Detected (${anomaly.severity})` : 'System Normal'}</h4>
+                <h4>{anomaly.available === false ? 'ML anomaly model unavailable' : anomaly.is_anomaly ? `Anomaly Detected (${anomaly.severity})` : 'No anomaly signal'}</h4>
                 <p>
-                  {anomaly.is_anomaly
-                    ? anomaly.details?.join('; ') || 'Unusual pattern detected'
-                    : 'The current combination of system metrics is consistent with patterns considered normal by the trained ML model.'}
+                  {anomaly.available === false
+                    ? anomaly.reason || 'The model cannot evaluate the current live feature contract.'
+                    : anomaly.is_anomaly
+                      ? anomaly.details?.join('; ') || 'Unusual pattern detected'
+                      : 'The current metrics were not flagged by the trained ML model. This is an experimental signal, not proof that the system is healthy.'}
                 </p>
 
                 {anomaly.current_metrics && (
@@ -181,20 +184,22 @@ export default function Alerts() {
                     <span>Disk: {anomaly.current_metrics.disk}%</span>
                   </div>
                 )}
-                <p style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
-                  Score: {anomaly.anomaly_score} (lower = more anomalous)
-                </p>
+                {anomaly.available !== false && (
+                  <p style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
+                    Score: {anomaly.anomaly_score} (lower = more anomalous)
+                  </p>
+                )}
               </div>
             </div>
           )}
 
-          {/* Process Anomalies */}
-          {processAnomalies.length > 0 && (
+          {/* Rule-based process resource signals */}
+          {processSignals.length > 0 && (
             <>
               <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '8px', marginTop: '12px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                Process Anomalies
+                Process Threshold Signals
               </div>
-              {processAnomalies.slice(0, 5).map((pa, i) => (
+              {processSignals.slice(0, 5).map((pa, i) => (
                 <div key={i} className={`alert-card ${pa.severity}`}>
                   <span className="alert-icon">{pa.severity === 'critical' ? '🔴' : '🟡'}</span>
                   <div className="alert-content">
@@ -207,12 +212,12 @@ export default function Alerts() {
           )}
 
           {/* Process alerts from threshold system */}
-          {processAlerts.length > 0 && processAnomalies.length === 0 && (
+          {processRuleAlerts.length > 0 && processSignals.length === 0 && (
             <>
               <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '8px', marginTop: '12px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                Process Warnings
+                Process Threshold Signals
               </div>
-              {processAlerts.map((alert, i) => (
+              {processRuleAlerts.map((alert, i) => (
                 <div key={i} className={`alert-card ${alert.level}`}>
                   <span className="alert-icon">{getAlertIcon(alert.level)}</span>
                   <div className="alert-content">
@@ -223,7 +228,7 @@ export default function Alerts() {
             </>
           )}
 
-          {!anomaly && processAnomalies.length === 0 && processAlerts.length === 0 && (
+          {!anomaly && processSignals.length === 0 && processRuleAlerts.length === 0 && (
             <div className="empty-state" style={{ padding: '20px' }}>
               <p style={{ color: '#64748b' }}>Anomaly detection model not loaded. Train the model first.</p>
             </div>

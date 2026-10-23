@@ -1,9 +1,77 @@
 import { useState, useEffect, useCallback } from 'react';
 import LiveChart from '../components/LiveChart';
-import { getPrediction, getMetricsHistory } from '../services/api';
+import { getPrediction, getPredictionEvaluation, getMetricsHistory } from '../services/api';
+
+const MODEL_LABELS = {
+  random_forest: 'Random Forest',
+  lstm: 'LSTM',
+  naive_baseline: 'Naive Baseline',
+};
+
+const METRIC_LABELS = {
+  cpu: 'CPU',
+  ram: 'RAM',
+  cpu_percent: 'CPU',
+  ram_percent: 'RAM',
+};
+
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const formatMetric = (value, digits = 2) => {
+  if (value === null || value === undefined || value === '') return '—';
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue.toFixed(digits) : '—';
+};
+
+const formatCount = (value) => {
+  if (value === null || value === undefined || value === '') return '—';
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue.toLocaleString() : '—';
+};
+
+const formatLocalTime = (value) => {
+  if (!value) return 'unknown time';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString();
+};
+
+const labelFromKey = (key) => String(key)
+  .replace(/_/g, ' ')
+  .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+const getEvaluationRows = (summary) => {
+  if (!isObject(summary)) return [];
+
+  const modelGroups = isObject(summary.models) ? summary.models : summary;
+
+  return Object.entries(modelGroups).flatMap(([modelKey, modelMetrics]) => {
+    if (!isObject(modelMetrics)) return [];
+
+    const metricGroups = isObject(modelMetrics.metrics)
+      ? modelMetrics.metrics
+      : modelMetrics;
+
+    return Object.entries(metricGroups).flatMap(([metricKey, metricValues]) => {
+      if (!isObject(metricValues)) return [];
+
+      const hasErrorMetric = ['mae', 'rmse', 'r2'].some((key) => metricValues[key] !== undefined);
+      if (!hasErrorMetric) return [];
+
+      return [{
+        model: MODEL_LABELS[modelKey] || labelFromKey(modelKey),
+        metric: METRIC_LABELS[metricKey] || labelFromKey(metricKey),
+        mae: metricValues.mae,
+        rmse: metricValues.rmse,
+        r2: metricValues.r2,
+        samples: metricValues.count ?? metricValues.samples ?? metricValues.matched_count,
+      }];
+    });
+  });
+};
 
 export default function Prediction() {
   const [prediction, setPrediction] = useState(null);
+  const [evaluation, setEvaluation] = useState(null);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -22,6 +90,15 @@ export default function Prediction() {
       setHistory(histRes.data);
     } catch (err) {
       console.warn('history failed:', err.message);
+    }
+
+    // The endpoint is optional while older backend versions are in use.
+    // Its failure must never hide the forecast or live-telemetry sections.
+    try {
+      const evaluationRes = await getPredictionEvaluation();
+      setEvaluation(evaluationRes.data);
+    } catch {
+      setEvaluation(null);
     }
   }, [loading]);
 
@@ -73,22 +150,34 @@ export default function Prediction() {
 
   const lstmCpuPred = dlPred?.predicted_cpu_30s;
   const lstmRamPred = dlPred?.predicted_ram_30s;
+  const rfEstimateLabel = isMLModel ? 'RF estimate • 30s' : 'Baseline • current value';
+
+  const evaluationSummary = evaluation?.summary ?? evaluation?.models ?? evaluation;
+  const evaluationRows = getEvaluationRows(evaluationSummary);
+  const matchedCount = evaluation?.matched_count ?? evaluation?.matched ?? evaluation?.validated_count;
+  const pendingCount = evaluation?.pending_count ?? evaluation?.pending ?? evaluation?.unmatched_count;
+  const hasEvaluation = Boolean(evaluation) && (
+    evaluationRows.length > 0 || matchedCount !== undefined || pendingCount !== undefined
+  );
 
   return (
     <div>
       <div className="page-header animate-in">
-        <h2>AI Prediction</h2>
-        <p>Machine learning-powered resource usage forecasting — 30 seconds ahead</p>
+        <h2>Dataset-Trained Forecasts</h2>
+        <p>Experimental CPU and RAM estimates alongside separately labelled live OS telemetry</p>
       </div>
 
       <div className="card animate-in" style={{ marginBottom: '18px', display: 'flex', alignItems: 'center', gap: '12px' }}>
         <span className={`model-badge ${isMLModel ? 'ml' : 'naive'}`}>
-          {isMLModel ? '🤖 ML Model Active' : '📊 Naive Baseline'}
+          {isMLModel ? '🤖 Dataset-Trained RF Active' : '📊 Current-Value Baseline'}
         </span>
         <span style={{ fontSize: '0.82rem', color: '#94a3b8' }}>
           {isMLModel
-            ? 'Random Forest Regressor and LSTM models are generating 30-second ahead predictions based on historical patterns'
-            : 'ML model not yet trained — using naive baseline (predicted = current). Train the model once you have enough data.'}
+            ? 'Random Forest and LSTM were trained on an external dataset. Their 30-second values are estimates, not a live accuracy claim; compare completed forecasts with later live readings below.'
+            : 'The trained model is unavailable, so the dashboard is showing the current-value baseline (forecast = current reading).'}
+          {prediction?.forecast_basis?.source_timestamp && (
+            <><br />Forecast features use the latest collector sample at {formatLocalTime(prediction.forecast_basis.source_timestamp)}.</>
+          )}
         </span>
       </div>
 
@@ -96,7 +185,7 @@ export default function Prediction() {
 
         {/* CPU Prediction */}
         <div className="card prediction-card">
-          <div className="prediction-label">CPU Usage Prediction</div>
+          <div className="prediction-label">CPU Forecast (Experimental)</div>
 
           <div className="prediction-values">
             <div>
@@ -115,7 +204,7 @@ export default function Prediction() {
                 {cpuPred?.toFixed(1) || '—'}%
               </div>
               <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
-                RF • 30s
+                {rfEstimateLabel}
               </div>
             </div>
           </div>
@@ -139,7 +228,7 @@ export default function Prediction() {
             fontSize: '0.75rem'
           }}>
             <span style={{ color: '#94a3b8' }}>
-              🧠 LSTM
+              🧠 LSTM estimate • 30s
             </span>
             <span style={{ color: '#06b6d4', fontWeight: 600 }}>
               {lstmCpuPred?.toFixed(1) || '—'}%
@@ -150,7 +239,7 @@ export default function Prediction() {
 
         {/* RAM Prediction */}
         <div className="card prediction-card">
-          <div className="prediction-label">RAM Usage Prediction</div>
+          <div className="prediction-label">RAM Forecast (Experimental)</div>
 
           <div className="prediction-values">
             <div>
@@ -169,7 +258,7 @@ export default function Prediction() {
                 {ramPred?.toFixed(1) || '—'}%
               </div>
               <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
-                RF • 30s
+                {rfEstimateLabel}
               </div>
             </div>
           </div>
@@ -193,7 +282,7 @@ export default function Prediction() {
             fontSize: '0.75rem'
           }}>
             <span style={{ color: '#94a3b8' }}>
-              🧠 LSTM
+              🧠 LSTM estimate • 30s
             </span>
             <span style={{ color: '#8b5cf6', fontWeight: 600 }}>
               {lstmRamPred?.toFixed(1) || '—'}%
@@ -202,28 +291,17 @@ export default function Prediction() {
         </div>
 
 
-        {/* Disk Usage */}
+        {/* Disk is intentionally live telemetry, not a forecast. */}
         <div className="card prediction-card">
-          <div className="prediction-label">Disk Usage</div>
+          <div className="prediction-label">Disk Usage (Live)</div>
 
-          <div className="prediction-values">
+          <div className="prediction-values" style={{ justifyContent: 'center' }}>
             <div>
               <div className="prediction-current">
                 {current?.disk?.toFixed(1) || '—'}%
               </div>
               <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
-                Current
-              </div>
-            </div>
-
-            <div className="prediction-arrow">→</div>
-
-            <div>
-              <div className="prediction-future stable">
-                {current?.disk?.toFixed(1) || '—'}%
-              </div>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
-                Stable
+                Current OS telemetry
               </div>
             </div>
           </div>
@@ -237,9 +315,51 @@ export default function Prediction() {
               }}
             />
           </div>
+          <p style={{ fontSize: '0.72rem', color: '#64748b', margin: '12px 0 0' }}>
+            Disk is shown as current usage only; it is not forecast by the ML or DL models.
+          </p>
         </div>
 
       </div>
+
+      {hasEvaluation && (
+        <div className="card animate-in animate-in-delay-2" style={{ marginBottom: '18px' }}>
+          <div className="chart-header">
+            <span className="chart-title">Live Forecast Evaluation</span>
+            <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
+              {matchedCount !== undefined && <span>{formatCount(matchedCount)} matched</span>}
+              {matchedCount !== undefined && pendingCount !== undefined && <span> · </span>}
+              {pendingCount !== undefined && <span>{formatCount(pendingCount)} awaiting observation</span>}
+            </span>
+          </div>
+          <p style={{ fontSize: '0.82rem', color: '#94a3b8', marginBottom: '16px' }}>
+            Each completed forecast is compared with the live value observed 30 seconds later. Lower MAE and RMSE are better; R² closer to 1 is better. These are evaluation metrics, not classification accuracy percentages.
+          </p>
+          {evaluationRows.length > 0 ? (
+            <table className="process-table">
+              <thead>
+                <tr><th>Model</th><th>Metric</th><th>MAE</th><th>RMSE</th><th>R²</th><th>Samples</th></tr>
+              </thead>
+              <tbody>
+                {evaluationRows.map((row) => (
+                  <tr key={`${row.model}-${row.metric}`}>
+                    <td className="process-name">{row.model}</td>
+                    <td>{row.metric}</td>
+                    <td>{formatMetric(row.mae)}</td>
+                    <td>{formatMetric(row.rmse)}</td>
+                    <td>{formatMetric(row.r2, 3)}</td>
+                    <td>{formatCount(row.samples ?? matchedCount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="empty-state" style={{ padding: '14px 0 2px' }}>
+              <p>Forecast matching is collecting observations. Error metrics will appear after forecasts have been matched with later live readings.</p>
+            </div>
+          )}
+        </div>
+      )}
 
       {prediction?.feature_importances && (
         <div className="card animate-in animate-in-delay-2" style={{ marginBottom: '18px' }}>
@@ -271,20 +391,27 @@ export default function Prediction() {
           <div className="chart-header">
             <span className="chart-title">🛡️ Anomaly Detection</span>
           </div>
-          <div className={`alert-card ${prediction.anomaly.is_anomaly ? (prediction.anomaly.severity === 'critical' ? 'critical' : 'warning') : 'info'}`}>
-            <span className="alert-icon">{prediction.anomaly.is_anomaly ? '🔴' : '🟢'}</span>
+          <div className={`alert-card ${prediction.anomaly.available === false ? 'info' : prediction.anomaly.is_anomaly ? (prediction.anomaly.severity === 'critical' ? 'critical' : 'warning') : 'info'}`}>
+            <span className="alert-icon">{prediction.anomaly.available === false ? 'ℹ️' : prediction.anomaly.is_anomaly ? '🔴' : '🟢'}</span>
             <div className="alert-content">
-              <h4>{prediction.anomaly.is_anomaly ? `Anomaly Detected (${prediction.anomaly.severity})` : 'No Anomaly Detected'}</h4>
-              <p>{prediction.anomaly.is_anomaly ? prediction.anomaly.details?.join('; ') : 'System behavior is within normal parameters'}</p>
-              <p style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
-                Anomaly Score: {prediction.anomaly.anomaly_score}
+              <h4>{prediction.anomaly.available === false ? 'ML anomaly model unavailable' : prediction.anomaly.is_anomaly ? `Anomaly Detected (${prediction.anomaly.severity})` : 'No anomaly signal'}</h4>
+              <p>{prediction.anomaly.available === false
+                ? prediction.anomaly.reason || 'The live feature contract cannot be evaluated by this model.'
+                : prediction.anomaly.is_anomaly
+                  ? prediction.anomaly.details?.join('; ')
+                  : 'The trained model did not flag this metric combination. This is not proof that the system is healthy.'}
               </p>
+              {prediction.anomaly.available !== false && (
+                <p style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
+                  Anomaly Score: {prediction.anomaly.anomaly_score}
+                </p>
+              )}
             </div>
           </div>
           {prediction.process_anomalies?.length > 0 && (
             <div style={{ marginTop: '12px' }}>
               <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '8px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                Process Anomalies
+                Process Threshold Signals
               </div>
               {prediction.process_anomalies.slice(0, 5).map((pa, i) => (
                 <div key={i} className={`alert-card ${pa.severity}`}>

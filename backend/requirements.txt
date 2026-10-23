@@ -6,3 +6,5 @@ numpy
 scikit-learn
 joblib
 matplotlib
+# Required to load and serve the LSTM deep-learning forecasts.
+torch

@@ -18,6 +18,7 @@ from routes.processes import router as processes_router
 from routes.alerts import router as alerts_router
 from routes.predict import router as predict_router
 from services.health_score import calculate_health_score
+from services.live_metrics import get_live_cpu_percent
 from services.recommendations import generate_recommendations
 
 DISK_PATH = "C:\\" if platform.system() == "Windows" else "/"
@@ -61,7 +62,7 @@ def health_score():
     Weighted health score (0-100) based on current CPU, RAM, disk.
     Displayed as the main indicator on the dashboard.
     """
-    cpu = psutil.cpu_percent(interval=0)
+    cpu = get_live_cpu_percent()
     ram = psutil.virtual_memory().percent
     disk = psutil.disk_usage(DISK_PATH).percent
 
@@ -83,7 +84,7 @@ def recommendations():
     Phase 1: Rule-based.
     Phase 2: Augmented with ML feature importances.
     """
-    cpu = psutil.cpu_percent(interval=0)
+    cpu = get_live_cpu_percent()
     ram = psutil.virtual_memory().percent
     disk = psutil.disk_usage(DISK_PATH).percent
 

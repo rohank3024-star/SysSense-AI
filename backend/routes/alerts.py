@@ -1,142 +1,132 @@
-"""
-Alerts endpoints for SysSense AI.
+"""Rule-based alerts for live OS telemetry.
 
-Combines:
-    1. Rule-based threshold alerts (CPU/RAM/Disk thresholds)
-    2. ML-based anomaly detection (Isolation Forest)
-    3. Per-process anomaly warnings (e.g., "Chrome consuming high CPU")
+This endpoint intentionally serves transparent threshold rules only. The
+separate Isolation Forest signal comes from ``/predict`` so a rule alert is
+never mislabeled as a machine-learning anomaly.
 """
-from fastapi import APIRouter, Query
-import psutil
 import platform
 
-from database import insert_alert, get_recent_alerts
+import psutil
+from fastapi import APIRouter, Query
+
+from database import get_recent_alerts, insert_alert
+from services.live_metrics import get_live_cpu_percent
+
 
 router = APIRouter(tags=["Alerts"])
 
 DISK_PATH = "C:\\" if platform.system() == "Windows" else "/"
+IDLE_PROCESS_NAMES = {"system idle process", "idle"}
 
-# Thresholds — tune based on what's normal on your machine
+# Tune these documented rules for the demonstration computer if necessary.
 CPU_WARNING = 75
 CPU_CRITICAL = 90
 RAM_WARNING = 80
 RAM_CRITICAL = 95
 DISK_WARNING = 80
 DISK_CRITICAL = 95
+PROCESS_CPU_WARNING = 50
+PROCESS_MEMORY_WARNING = 25
 
 
-def _get_process_anomaly_alerts():
-    """
-    Detect per-process resource anomalies.
-
-    Implements the proposal's Module 5 requirement:
-        "Warning: Chrome is consuming unusually high CPU."
-    """
+def _get_process_threshold_alerts():
+    """Return fixed-rule process signals, excluding Windows idle time."""
     process_alerts = []
     try:
-        for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
+        for process in psutil.process_iter(
+            ["pid", "name", "cpu_percent", "memory_percent"]
+        ):
             try:
-                info = p.info
-                cpu_pct = info.get("cpu_percent") or 0
-                mem_pct = info.get("memory_percent") or 0
-                name = info.get("name", "Unknown")
+                info = process.info
+                pid = info.get("pid", 0)
+                name = info.get("name") or "Unknown"
+                if pid == 0 or name.casefold() in IDLE_PROCESS_NAMES:
+                    # Windows exposes idle time as a pseudo-process. Flagging it
+                    # as high CPU would be a false positive.
+                    continue
 
-                if cpu_pct > 50:
+                cpu_percent = float(info.get("cpu_percent") or 0)
+                memory_percent = float(info.get("memory_percent") or 0)
+                if cpu_percent > PROCESS_CPU_WARNING:
                     process_alerts.append({
-                        "level": "critical" if cpu_pct > 80 else "warning",
+                        "level": "critical" if cpu_percent > 80 else "warning",
                         "category": "Process",
-                        "message": f"{name} is consuming unusually high CPU ({cpu_pct:.1f}%)",
+                        "message": (
+                            f"{name} exceeds the high-CPU rule "
+                            f"({cpu_percent:.1f}% sampled process CPU)"
+                        ),
                         "process": name,
-                        "pid": info.get("pid", 0),
-                        "source": "anomaly_detection",
+                        "pid": pid,
+                        "source": "process_threshold",
                     })
-
-                if mem_pct > 25:
+                if memory_percent > PROCESS_MEMORY_WARNING:
                     process_alerts.append({
-                        "level": "critical" if mem_pct > 50 else "warning",
+                        "level": "critical" if memory_percent > 50 else "warning",
                         "category": "Process",
-                        "message": f"{name} is consuming unusually high memory ({mem_pct:.1f}%)",
+                        "message": (
+                            f"{name} exceeds the high-memory rule "
+                            f"({memory_percent:.1f}% of RAM)"
+                        ),
                         "process": name,
-                        "pid": info.get("pid", 0),
-                        "source": "anomaly_detection",
+                        "pid": pid,
+                        "source": "process_threshold",
                     })
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
                 continue
     except Exception:
         pass
-
     return process_alerts
+
+
+def _add_system_alert(alerts, level, category, message):
+    alert = {
+        "level": level,
+        "category": category,
+        "message": message,
+        "source": "threshold",
+    }
+    alerts.append(alert)
+    insert_alert(level, message)
 
 
 @router.get("/alerts")
 def check_alerts():
-    """
-    Combined alerts from:
-        1. Rule-based thresholds (CPU/RAM/Disk)
-        2. Per-process anomaly detection
-
-    Rule-based alerts are NOT ML — they use threshold logic.
-    Process anomaly alerts use ML-like pattern detection.
-    """
-    cpu = psutil.cpu_percent(interval=0)
+    """Return live CPU/RAM/disk rules and high-resource process rules."""
+    cpu = get_live_cpu_percent()
     ram = psutil.virtual_memory().percent
     disk = psutil.disk_usage(DISK_PATH).percent
     alerts = []
 
-    # ── Rule-based: CPU alerts ────────────────────────────────────────
     if cpu > CPU_CRITICAL:
-        a = {"level": "critical", "category": "CPU",
-             "message": f"CPU critically high: {cpu}%",
-             "source": "threshold"}
-        alerts.append(a)
-        insert_alert(a["level"], a["message"])
+        _add_system_alert(alerts, "critical", "CPU", f"CPU critically high: {cpu}%")
     elif cpu > CPU_WARNING:
-        a = {"level": "warning", "category": "CPU",
-             "message": f"CPU usage elevated: {cpu}%",
-             "source": "threshold"}
-        alerts.append(a)
-        insert_alert(a["level"], a["message"])
+        _add_system_alert(alerts, "warning", "CPU", f"CPU usage elevated: {cpu}%")
 
-    # ── Rule-based: RAM alerts ────────────────────────────────────────
     if ram > RAM_CRITICAL:
-        a = {"level": "critical", "category": "Memory",
-             "message": f"Memory critical: {ram}%",
-             "source": "threshold"}
-        alerts.append(a)
-        insert_alert(a["level"], a["message"])
+        _add_system_alert(alerts, "critical", "Memory", f"Memory critical: {ram}%")
     elif ram > RAM_WARNING:
-        a = {"level": "warning", "category": "Memory",
-             "message": f"Memory usage high: {ram}%",
-             "source": "threshold"}
-        alerts.append(a)
-        insert_alert(a["level"], a["message"])
+        _add_system_alert(alerts, "warning", "Memory", f"Memory usage high: {ram}%")
 
-    # ── Rule-based: Disk alerts ───────────────────────────────────────
     if disk > DISK_CRITICAL:
-        a = {"level": "critical", "category": "Disk",
-             "message": f"Disk almost full: {disk}%",
-             "source": "threshold"}
-        alerts.append(a)
-        insert_alert(a["level"], a["message"])
+        _add_system_alert(alerts, "critical", "Disk", f"Disk almost full: {disk}%")
     elif disk > DISK_WARNING:
-        a = {"level": "warning", "category": "Disk",
-             "message": f"Disk usage elevated: {disk}%",
-             "source": "threshold"}
-        alerts.append(a)
-        insert_alert(a["level"], a["message"])
+        _add_system_alert(alerts, "warning", "Disk", f"Disk usage elevated: {disk}%")
 
-    # ── Process anomaly alerts ────────────────────────────────────────
-    process_alerts = _get_process_anomaly_alerts()
-    # Only include top 5 process alerts to avoid flooding
+    process_alerts = _get_process_threshold_alerts()
     alerts.extend(process_alerts[:5])
 
     return {
         "alerts": alerts,
         "current": {"cpu": cpu, "ram": ram, "disk": disk},
         "thresholds": {
-            "cpu_warning": CPU_WARNING, "cpu_critical": CPU_CRITICAL,
-            "ram_warning": RAM_WARNING, "ram_critical": RAM_CRITICAL,
-            "disk_warning": DISK_WARNING, "disk_critical": DISK_CRITICAL,
+            "cpu_warning": CPU_WARNING,
+            "cpu_critical": CPU_CRITICAL,
+            "ram_warning": RAM_WARNING,
+            "ram_critical": RAM_CRITICAL,
+            "disk_warning": DISK_WARNING,
+            "disk_critical": DISK_CRITICAL,
+            "process_cpu_warning": PROCESS_CPU_WARNING,
+            "process_memory_warning": PROCESS_MEMORY_WARNING,
         },
         "process_alert_count": len(process_alerts),
     }
@@ -144,5 +134,5 @@ def check_alerts():
 
 @router.get("/alerts/history")
 def alert_history(limit: int = Query(50, ge=1, le=500)):
-    """Historical alerts — see how often thresholds have been breached."""
+    """Historical system threshold entries."""
     return get_recent_alerts(limit)

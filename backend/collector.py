@@ -13,7 +13,7 @@ import sqlite3
 import psutil
 from database import init_db, insert_metric, insert_process_snapshot
 
-POLL_INTERVAL_SECONDS = 3          # time between log writes
+COLLECTION_INTERVAL_SECONDS = 5    # align live samples with the training horizon
 PROCESS_SNAPSHOT_EVERY = 10        # log top processes every N cycles
 PROCESS_SNAPSHOT_TOP_N = 10        # number of top processes to snapshot
 
@@ -68,11 +68,12 @@ def snapshot_top_processes():
 
 def main():
     init_db()
-    print(f"SysSense collector started. Logging every ~{POLL_INTERVAL_SECONDS + 1}s.")
+    print(f"SysSense collector started. Logging every ~{COLLECTION_INTERVAL_SECONDS}s.")
     print("Press Ctrl+C to stop.\n")
     cycle = 0
     try:
         while True:
+            cycle_started = time.monotonic()
             try:
                 cpu, ram, disk = collect_once()
                 cycle += 1
@@ -84,7 +85,12 @@ def main():
             except sqlite3.OperationalError as e:
                 print(f"[Warning] Database busy, retrying next cycle: {e}")
 
-            time.sleep(POLL_INTERVAL_SECONDS)
+            # ``cpu_percent(interval=1)`` is part of collection time. Sleep
+            # only for the remainder so consecutive database rows stay close
+            # to five seconds apart and six samples correspond to ~30 seconds.
+            remaining = COLLECTION_INTERVAL_SECONDS - (time.monotonic() - cycle_started)
+            if remaining > 0:
+                time.sleep(remaining)
     except KeyboardInterrupt:
         print("\nCollector stopped.")
 

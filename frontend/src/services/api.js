@@ -40,6 +40,10 @@ export const getAlertHistory = (limit = 50) =>
 
 export const getPrediction = () => api.get('/predict');
 
+// Optional live-validation data. Older backends do not provide this endpoint,
+// so callers should treat a failed request as "evaluation unavailable".
+export const getPredictionEvaluation = () => api.get('/predict/evaluation');
+
 export const reloadModels = () => api.get('/predict/reload');
 
 // ── Health & Recommendations ─────────────────────────────────────────

@@ -107,19 +107,8 @@ export default function Dashboard() {
   }
 
   // Extract prediction data
-  const isMLModel = prediction?.model_used === 'random_forest';
-
   const mlPred = prediction?.ml_prediction;
   const dlPred = prediction?.dl_prediction;
-  const naivePred = prediction?.naive_baseline;
-
-  const cpuPred = isMLModel && mlPred
-    ? mlPred.predicted_cpu_30s
-    : naivePred?.predicted_cpu_30s;
-
-  const ramPred = isMLModel && mlPred
-    ? mlPred.predicted_ram_30s
-    : naivePred?.predicted_ram_30s;
 
   const lstmCpuPred = dlPred?.predicted_cpu_30s;
   const lstmRamPred = dlPred?.predicted_ram_30s;
@@ -130,14 +119,14 @@ export default function Dashboard() {
     <div>
       <div className="page-header animate-in">
         <h2>Dashboard</h2>
-        <p>Real-time system monitoring & health overview</p>
+        <p>Live OS telemetry, health overview, and experimental model outputs</p>
       </div>
 
       {/* ── Metric Cards ─────────────────────────────────────── */}
       <div className="metric-cards">
         <MetricCard
           type="cpu"
-          label="CPU Usage"
+          label="CPU Usage (Live)"
           value={metrics?.cpu_percent}
           unit="%"
           detail={`${metrics?.cpu_count || '—'} cores · ${formatUptime(metrics?.uptime_seconds)} uptime`}
@@ -145,7 +134,7 @@ export default function Dashboard() {
         />
         <MetricCard
           type="ram"
-          label="Memory"
+          label="Memory (Live)"
           value={metrics?.ram_percent}
           unit="%"
           detail={`${metrics?.ram_used_gb || '—'} / ${metrics?.ram_total_gb || '—'} GB`}
@@ -153,7 +142,7 @@ export default function Dashboard() {
         />
         <MetricCard
           type="disk"
-          label="Disk Usage"
+          label="Disk Usage (Live)"
           value={metrics?.disk_percent}
           unit="%"
           detail={`${metrics?.disk_used_gb || '—'} / ${metrics?.disk_total_gb || '—'} GB`}
@@ -161,7 +150,7 @@ export default function Dashboard() {
         />
         <MetricCard
           type="net"
-          label="Network"
+          label="Network (Live)"
           value={metrics?.net_sent_mb}
           unit=" MB↑"
           detail={`${metrics?.net_recv_mb?.toFixed(0) || '—'} MB received`}
@@ -186,14 +175,14 @@ export default function Dashboard() {
                 fontSize: '1rem',
                 color: '#f1f5f9'
               }}>
-                AI Resource Prediction
+                Dataset-Trained Forecasts (Experimental)
               </h3>
               <p style={{
                 margin: '4px 0 0',
                 fontSize: '0.72rem',
                 color: '#64748b'
               }}>
-                CPU & RAM usage forecast for the next 30 seconds
+                CPU and RAM estimates for the next 30 seconds. Compare them with later live readings to measure error.
               </p>
             </div>
 
@@ -205,7 +194,7 @@ export default function Dashboard() {
               color: '#06b6d4',
               border: '1px solid rgba(6, 182, 212, 0.20)'
             }}>
-              30s Forecast
+              30s Estimates
             </span>
           </div>
 
@@ -223,7 +212,7 @@ export default function Dashboard() {
                 letterSpacing: '0.8px',
                 fontWeight: 600
               }}>
-                🤖 Random Forest
+                🤖 Random Forest (Dataset-Trained)
               </div>
 
               <div style={{
@@ -275,7 +264,7 @@ export default function Dashboard() {
                 fontSize: '0.68rem',
                 color: '#64748b'
               }}>
-                Trained ML model
+                Experimental forecast; measured error is shown on the AI Prediction page when validation data is available.
               </div>
 
             </div>
@@ -291,7 +280,7 @@ export default function Dashboard() {
                 letterSpacing: '0.8px',
                 fontWeight: 600
               }}>
-                🧠 LSTM Deep Learning
+                🧠 LSTM (Dataset-Trained)
               </div>
 
               <div style={{
@@ -343,7 +332,7 @@ export default function Dashboard() {
                 fontSize: '0.68rem',
                 color: '#64748b'
               }}>
-                Sequence-based deep learning model
+                Experimental sequence-model forecast; it is not a live accuracy score.
               </div>
 
             </div>
@@ -358,8 +347,8 @@ export default function Dashboard() {
              style={{ marginBottom: '18px' }}>
           <span className="alert-icon">{anomaly.severity === 'critical' ? '🔴' : '🟡'}</span>
           <div className="alert-content">
-            <h4>Anomaly Detected — {anomaly.severity} severity</h4>
-            <p>{anomaly.details?.join('; ') || 'Unusual system behavior detected by ML model'}</p>
+            <h4>Experimental ML anomaly signal — {anomaly.severity} severity</h4>
+            <p>{anomaly.details?.join('; ') || 'An unusual metric combination was flagged by the model. Verify it against live metrics and threshold alerts.'}</p>
           </div>
         </div>
       )}

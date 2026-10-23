@@ -1,522 +1,383 @@
+"""LSTM forecasting trained on the project dataset.
+
+The LSTM uses the same collector-compatible feature contract as the Random
+Forest. Training, validation, and final testing are chronological and kept
+separate, so early stopping never uses the final test partition.
 """
-SysSense AI — Deep Learning Model (LSTM)
-
-Implements a 2-layer LSTM network for CPU and RAM usage prediction,
-trained on the same Kaggle IT System Performance dataset used by the
-Random Forest model. Uses sliding-window sequences to capture temporal
-dependencies in system metrics.
-
-Architecture:
-    Input (window_size x features) -> LSTM(128) -> LSTM(64) -> Dense(32) -> Output(1)
-
-References:
-    [1] "An Effective Workload Prediction with RNN-LSTM for Efficient
-         Resource Autoscaling in Private Cloud Environments", IJAACI, 2025.
-         DOI: 10.54216/IJAACI.070105
-    [2] "Elastic Cloud Resource Allocation using Short-Term LSTM-based
-         Workload Prediction", SPIE Proceedings, 2025.
-         DOI: 10.1117/12.3060861
-    [3] "Application-Oriented Cloud Workload Prediction: A Survey and
-         New Perspectives", Tsinghua Science & Technology (IEEE), 2025.
-    [4] "Cloud Resource Prediction using Hybrid GRU-LSTM Deep Learning
-         Model", ResearchGate, 2025.
-    [5] "TFEGRU: Time-Frequency Enhanced GRU with Attention for Cloud
-         Workload Prediction", IEEE Computer Society, 2024.
-    [6] "Deep Learning Advancements in Anomaly Detection: A Comprehensive
-         Survey", arXiv, 2025.
-    [7] "A Comprehensive Survey on Anomaly Detection Using Deep Learning",
-         ResearchGate, 2026.
-
-Usage:
-    python dl_model.py
-"""
-
+import copy
 import os
 import sys
-import numpy as np
-import pandas as pd
-import joblib
 
-# ── PyTorch imports ──────────────────────────────────────────────────────
+import joblib
+import numpy as np
+
 try:
     import torch
     import torch.nn as nn
-    from torch.utils.data import Dataset, DataLoader
+    from torch.utils.data import DataLoader, Dataset
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
     print("[!] PyTorch not installed. Install with: pip install torch")
 
-from .preprocessing import load_data, engineer_features
+try:
+    from .preprocessing import (
+        COLLECTOR_FEATURE_NAMES,
+        FORECAST_HORIZON_SAMPLES,
+        engineer_features,
+        get_feature_contract,
+        load_data,
+    )
+except ImportError:
+    from preprocessing import (
+        COLLECTOR_FEATURE_NAMES,
+        FORECAST_HORIZON_SAMPLES,
+        engineer_features,
+        get_feature_contract,
+        load_data,
+    )
+
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 REPORT_PATH = os.path.join(os.path.dirname(__file__), "dl_evaluation_report.md")
 
-# ── Hyperparameters ──────────────────────────────────────────────────────
-WINDOW_SIZE = 10        # Number of past timesteps in each input sequence
-HIDDEN_SIZE_1 = 128     # First LSTM layer hidden units
-HIDDEN_SIZE_2 = 64      # Second LSTM layer hidden units
-DENSE_SIZE = 32         # Dense layer before output
-DROPOUT = 0.2           # Dropout rate between layers
+WINDOW_SIZE = 10
+HIDDEN_SIZE_1 = 128
+HIDDEN_SIZE_2 = 64
+DENSE_SIZE = 32
+DROPOUT = 0.2
 LEARNING_RATE = 0.001
 BATCH_SIZE = 64
-EPOCHS = 50
-PATIENCE = 8            # Early stopping patience
+EPOCHS = 40
+PATIENCE = 6
+RANDOM_SEED = 42
 
-
-# ══════════════════════════════════════════════════════════════════════════
-# Dataset
-# ══════════════════════════════════════════════════════════════════════════
 
 class TimeSeriesDataset(Dataset):
-    """
-    Sliding window dataset for LSTM training.
+    """Windows where the label belongs to the final observed row.
 
-    Converts a 2D feature matrix into (sequence, label) pairs where each
-    sequence is a window of `window_size` consecutive feature rows, and
-    the label is the target value at the next timestep.
+    Each feature row already has a target six samples in the future. Therefore
+    using the target of the final row preserves the documented 30-second
+    horizon instead of accidentally shifting it one more sample ahead.
     """
     def __init__(self, features, labels, window_size=WINDOW_SIZE):
+        if len(features) < window_size:
+            raise ValueError("Not enough feature rows for an LSTM window")
         self.X = []
         self.y = []
-        for i in range(len(features) - window_size):
-            self.X.append(features[i:i + window_size])
-            self.y.append(labels[i + window_size])
-        self.X = torch.FloatTensor(np.array(self.X))
-        self.y = torch.FloatTensor(np.array(self.y))
+        for end in range(window_size - 1, len(features)):
+            self.X.append(features[end - window_size + 1:end + 1])
+            self.y.append(labels[end])
+        self.X = torch.tensor(np.asarray(self.X), dtype=torch.float32)
+        self.y = torch.tensor(np.asarray(self.y), dtype=torch.float32)
 
     def __len__(self):
         return len(self.X)
 
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+    def __getitem__(self, index):
+        return self.X[index], self.y[index]
 
-
-# ══════════════════════════════════════════════════════════════════════════
-# LSTM Model
-# ══════════════════════════════════════════════════════════════════════════
 
 class LSTMPredictor(nn.Module):
-    """
-    2-layer LSTM for time-series resource prediction.
-
-    Architecture inspired by recent cloud workload prediction research [1][4]:
-        - Layer 1: LSTM with 128 hidden units (captures short-term patterns)
-        - Layer 2: LSTM with 64 hidden units (captures longer dependencies)
-        - Dropout between layers to prevent overfitting
-        - Dense layer for final regression output
-    """
+    """Two-layer stacked LSTM for CPU or RAM regression."""
     def __init__(self, input_size, hidden1=HIDDEN_SIZE_1, hidden2=HIDDEN_SIZE_2,
                  dense_size=DENSE_SIZE, dropout=DROPOUT):
-        super(LSTMPredictor, self).__init__()
-
-        self.lstm1 = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden1,
-            batch_first=True,
-            dropout=0
-        )
+        super().__init__()
+        self.lstm1 = nn.LSTM(input_size=input_size, hidden_size=hidden1, batch_first=True)
         self.dropout1 = nn.Dropout(dropout)
-
-        self.lstm2 = nn.LSTM(
-            input_size=hidden1,
-            hidden_size=hidden2,
-            batch_first=True,
-            dropout=0
-        )
+        self.lstm2 = nn.LSTM(input_size=hidden1, hidden_size=hidden2, batch_first=True)
         self.dropout2 = nn.Dropout(dropout)
-
         self.fc1 = nn.Linear(hidden2, dense_size)
         self.relu = nn.ReLU()
         self.dropout3 = nn.Dropout(dropout)
         self.fc2 = nn.Linear(dense_size, 1)
 
-    def forward(self, x):
-        # x shape: (batch, window_size, features)
-        out, _ = self.lstm1(x)
-        out = self.dropout1(out)
-
-        out, _ = self.lstm2(out)
-        out = self.dropout2(out)
-
-        # Take only the last timestep output
-        out = out[:, -1, :]
-
-        out = self.fc1(out)
-        out = self.relu(out)
-        out = self.dropout3(out)
-        out = self.fc2(out)
-        return out.squeeze(-1)
+    def forward(self, inputs):
+        output, _ = self.lstm1(inputs)
+        output = self.dropout1(output)
+        output, _ = self.lstm2(output)
+        output = self.dropout2(output[:, -1, :])
+        output = self.fc1(output)
+        output = self.relu(output)
+        output = self.dropout3(output)
+        return self.fc2(output).squeeze(-1)
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Training
-# ══════════════════════════════════════════════════════════════════════════
-
-def train_lstm(train_loader, val_loader, input_size, target_name="CPU"):
-    """
-    Train an LSTM model with early stopping.
-
-    Uses MSE loss and Adam optimizer as recommended by recent
-    workload prediction literature [1][2].
-    """
+def train_lstm(train_loader, validation_loader, input_size, target_name):
+    """Train with early stopping based only on the validation partition."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"\n{'='*55}")
-    print(f"  Training LSTM for {target_name} prediction")
-    print(f"  Device: {device}")
-    print(f"{'='*55}")
-
     model = LSTMPredictor(input_size).to(device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3
+        optimizer, mode="min", factor=0.5, patience=3
     )
-
-    best_val_loss = float('inf')
+    best_loss = float("inf")
+    best_state = None
     patience_counter = 0
-    best_model_state = None
 
+    print(f"\nTraining LSTM for {target_name} on {device}...")
     for epoch in range(EPOCHS):
-        # ── Train ─────────────────────────────────────────────────────
         model.train()
         train_loss = 0.0
-        for X_batch, y_batch in train_loader:
-            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+        for inputs, targets in train_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
-            predictions = model(X_batch)
-            loss = criterion(predictions, y_batch)
+            loss = criterion(model(inputs), targets)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            train_loss += loss.item() * len(X_batch)
+            train_loss += loss.item() * len(inputs)
         train_loss /= len(train_loader.dataset)
 
-        # ── Validate ──────────────────────────────────────────────────
         model.eval()
-        val_loss = 0.0
+        validation_loss = 0.0
         with torch.no_grad():
-            for X_batch, y_batch in val_loader:
-                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                predictions = model(X_batch)
-                loss = criterion(predictions, y_batch)
-                val_loss += loss.item() * len(X_batch)
-        val_loss /= len(val_loader.dataset)
-
-        scheduler.step(val_loss)
+            for inputs, targets in validation_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                validation_loss += criterion(model(inputs), targets).item() * len(inputs)
+        validation_loss /= len(validation_loader.dataset)
+        scheduler.step(validation_loss)
 
         if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"  Epoch {epoch+1:3d}/{EPOCHS} | "
-                  f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+            print(
+                f"  Epoch {epoch + 1:02d}/{EPOCHS} | "
+                f"train MSE {train_loss:.4f} | validation MSE {validation_loss:.4f}"
+            )
 
-        # ── Early stopping ────────────────────────────────────────────
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if validation_loss < best_loss:
+            best_loss = validation_loss
+            best_state = copy.deepcopy(model.state_dict())
             patience_counter = 0
-            best_model_state = model.state_dict().copy()
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE:
-                print(f"  Early stopping at epoch {epoch+1} "
-                      f"(best val loss: {best_val_loss:.4f})")
+                print(f"  Early stopping at epoch {epoch + 1}; best validation MSE {best_loss:.4f}")
                 break
 
-    if best_model_state:
-        model.load_state_dict(best_model_state)
-
-    print(f"  Best validation loss: {best_val_loss:.4f}")
+    if best_state is not None:
+        model.load_state_dict(best_state)
     return model
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Evaluation
-# ══════════════════════════════════════════════════════════════════════════
-
-def evaluate_lstm(model, test_loader, device):
-    """Evaluate LSTM on test set, return predictions and actuals."""
+def evaluate_lstm(model, loader, device):
+    """Return final-test predictions and labels without updating the model."""
     model.eval()
-    all_preds = []
-    all_actuals = []
-
+    predictions, actuals = [], []
     with torch.no_grad():
-        for X_batch, y_batch in test_loader:
-            X_batch = X_batch.to(device)
-            preds = model(X_batch).cpu().numpy()
-            all_preds.extend(preds)
-            all_actuals.extend(y_batch.numpy())
-
-    return np.array(all_preds), np.array(all_actuals)
+        for inputs, targets in loader:
+            predictions.extend(model(inputs.to(device)).cpu().numpy())
+            actuals.extend(targets.numpy())
+    return np.asarray(predictions), np.asarray(actuals)
 
 
-def compute_metrics(y_true, y_pred, label=""):
-    """Compute MAE, RMSE, R-squared for a set of predictions."""
+def compute_metrics(actuals, predictions):
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-    mae = mean_absolute_error(y_true, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    r2 = r2_score(y_true, y_pred)
-    print(f"  {label:8s} -> MAE: {mae:.4f} | RMSE: {rmse:.4f} | R2: {r2:.4f}")
+
+    mae = float(mean_absolute_error(actuals, predictions))
+    rmse = float(np.sqrt(mean_squared_error(actuals, predictions)))
+    r2 = float(r2_score(actuals, predictions))
     return {"mae": round(mae, 4), "rmse": round(rmse, 4), "r2": round(r2, 4)}
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Report Generation
-# ══════════════════════════════════════════════════════════════════════════
+def _format_metrics(metrics):
+    return f"MAE={metrics['mae']:.4f}, RMSE={metrics['rmse']:.4f}, R2={metrics['r2']:.4f}"
 
-def generate_dl_report(cpu_lstm, cpu_rf, cpu_naive,
-                       ram_lstm, ram_rf, ram_naive):
-    """Generate a comparison report: LSTM vs Random Forest vs Naive Baseline."""
 
-    def improvement(model_mae, baseline_mae):
-        if baseline_mae == 0:
-            return "N/A"
-        return f"{((baseline_mae - model_mae) / baseline_mae * 100):.1f}%"
+def generate_dl_report(cpu_lstm, cpu_rf, cpu_naive, ram_lstm, ram_rf, ram_naive):
+    """Write a transparent comparison report without a regression accuracy claim."""
+    report = f"""# SysSense AI - Deep Learning Evaluation Report
 
-    report = f"""# SysSense AI — Deep Learning Evaluation Report
+## Evaluation protocol
 
-## Model Architecture: LSTM (Long Short-Term Memory)
+- Dataset: Kaggle IT System Performance & Resource Metrics (mapped project CSV)
+- Inputs: collector-compatible feature profile, {len(COLLECTOR_FEATURE_NAMES)} features
+- Split: chronological 70% training, 10% validation, 20% final test, with a
+  {FORECAST_HORIZON_SAMPLES}-sample embargo at split boundaries
+- LSTM input: {WINDOW_SIZE} consecutive collector-compatible rows
+- Early stopping: validation partition only; final test was not used for training
 
-| Parameter | Value |
-|-----------|-------|
-| Architecture | 2-Layer Stacked LSTM |
-| Layer 1 | LSTM, {HIDDEN_SIZE_1} hidden units |
-| Layer 2 | LSTM, {HIDDEN_SIZE_2} hidden units |
-| Dense Layer | {DENSE_SIZE} units + ReLU |
-| Dropout | {DROPOUT} |
-| Window Size | {WINDOW_SIZE} timesteps |
-| Optimizer | Adam (lr={LEARNING_RATE}) |
-| Loss Function | MSE |
-| Early Stopping | Patience = {PATIENCE} epochs |
+CPU/RAM forecasting is regression, so MAE, RMSE, and R2 are reported rather
+than a classification-style accuracy percentage. These benchmark metrics do
+not by themselves prove live-machine forecast quality; use the dashboard's
+live forecast evaluation for that separate evidence.
 
-## CPU Prediction — Model Comparison
+## CPU prediction (nominal 30-second horizon)
 
-| Metric | LSTM (DL) | Random Forest (ML) | Naive Baseline | LSTM vs Naive |
-|--------|-----------|---------------------|----------------|---------------|
-| MAE    | {cpu_lstm['mae']} | {cpu_rf['mae']} | {cpu_naive['mae']} | {improvement(cpu_lstm['mae'], cpu_naive['mae'])} |
-| RMSE   | {cpu_lstm['rmse']} | {cpu_rf['rmse']} | {cpu_naive['rmse']} | {improvement(cpu_lstm['rmse'], cpu_naive['rmse'])} |
-| R2     | {cpu_lstm['r2']} | {cpu_rf['r2']} | {cpu_naive['r2']} | - |
+| Model | MAE | RMSE | R2 |
+|---|---:|---:|---:|
+| LSTM | {cpu_lstm['mae']:.4f} | {cpu_lstm['rmse']:.4f} | {cpu_lstm['r2']:.4f} |
+| Random Forest* | {cpu_rf['mae']:.4f} | {cpu_rf['rmse']:.4f} | {cpu_rf['r2']:.4f} |
+| Persistence baseline | {cpu_naive['mae']:.4f} | {cpu_naive['rmse']:.4f} | {cpu_naive['r2']:.4f} |
 
-## RAM Prediction — Model Comparison
+## RAM prediction (nominal 30-second horizon)
 
-| Metric | LSTM (DL) | Random Forest (ML) | Naive Baseline | LSTM vs Naive |
-|--------|-----------|---------------------|----------------|---------------|
-| MAE    | {ram_lstm['mae']} | {ram_rf['mae']} | {ram_naive['mae']} | {improvement(ram_lstm['mae'], ram_naive['mae'])} |
-| RMSE   | {ram_lstm['rmse']} | {ram_rf['rmse']} | {ram_naive['rmse']} | {improvement(ram_lstm['rmse'], ram_naive['rmse'])} |
-| R2     | {ram_lstm['r2']} | {ram_rf['r2']} | {ram_naive['r2']} | - |
+| Model | MAE | RMSE | R2 |
+|---|---:|---:|---:|
+| LSTM | {ram_lstm['mae']:.4f} | {ram_lstm['rmse']:.4f} | {ram_lstm['r2']:.4f} |
+| Random Forest* | {ram_rf['mae']:.4f} | {ram_rf['rmse']:.4f} | {ram_rf['r2']:.4f} |
+| Persistence baseline | {ram_naive['mae']:.4f} | {ram_naive['rmse']:.4f} | {ram_naive['r2']:.4f} |
 
-## Key Findings
-
-1. The LSTM captures **temporal dependencies** through its sliding-window architecture,
-   learning sequential patterns that the Random Forest treats as independent samples.
-2. Both ML and DL models outperform the naive baseline, confirming that historical
-   system metrics contain predictive signal for future resource usage.
-3. The LSTM's recurrent architecture is particularly suited for **time-series workload
-   prediction**, as demonstrated in recent cloud computing research [1][2][4].
-
-## References
-
-1. *An Effective Workload Prediction with RNN-LSTM for Efficient Resource Autoscaling
-   in Private Cloud Environments*, IJAACI, 2025. DOI: 10.54216/IJAACI.070105
-2. *Elastic Cloud Resource Allocation using Short-Term LSTM-based Workload Prediction*,
-   SPIE Proceedings, 2025. DOI: 10.1117/12.3060861
-3. *Application-Oriented Cloud Workload Prediction: A Survey and New Perspectives*,
-   Tsinghua Science & Technology (IEEE), 2025.
-4. *Cloud Resource Prediction using Hybrid GRU-LSTM Deep Learning Model*,
-   ResearchGate, 2025.
-5. *TFEGRU: Time-Frequency Enhanced GRU with Attention for Cloud Workload Prediction*,
-   IEEE Computer Society, 2024.
-6. *Deep Learning Advancements in Anomaly Detection: A Comprehensive Survey*,
-   arXiv, 2025.
-7. *A Comprehensive Survey on Anomaly Detection Using Deep Learning*,
-   ResearchGate, 2026.
+\*Random Forest values come from its separately saved chronological evaluation;
+the LSTM final-test window removes its first nine rows, so this is not a
+strictly identical-row head-to-head comparison.
 """
-    with open(REPORT_PATH, "w") as f:
-        f.write(report)
-    print(f"\n[OK] DL evaluation report saved to {REPORT_PATH}")
+    with open(REPORT_PATH, "w", encoding="utf-8") as report_file:
+        report_file.write(report)
+    print(f"[OK] DL evaluation report saved to {REPORT_PATH}")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Main Pipeline
-# ══════════════════════════════════════════════════════════════════════════
+def _make_loaders(features, labels_cpu, labels_ram):
+    """Build chronological train/validation/test loaders with embargoes."""
+    from sklearn.preprocessing import StandardScaler
+
+    total_rows = len(features)
+    validation_start = int(total_rows * 0.7)
+    test_start = int(total_rows * 0.8)
+    train_end = validation_start - FORECAST_HORIZON_SAMPLES
+    validation_end = test_start - FORECAST_HORIZON_SAMPLES
+    if min(train_end, validation_end - validation_start, total_rows - test_start) < WINDOW_SIZE:
+        raise ValueError("Not enough rows for chronological LSTM train/validation/test splits")
+
+    scaler = StandardScaler()
+    train_features = scaler.fit_transform(features[:train_end])
+    validation_features = scaler.transform(features[validation_start:validation_end])
+    test_features = scaler.transform(features[test_start:])
+
+    partitions = {
+        "train": (train_features, labels_cpu[:train_end], labels_ram[:train_end]),
+        "validation": (
+            validation_features,
+            labels_cpu[validation_start:validation_end],
+            labels_ram[validation_start:validation_end],
+        ),
+        "test": (test_features, labels_cpu[test_start:], labels_ram[test_start:]),
+    }
+    datasets = {}
+    for name, (partition_features, cpu_labels, ram_labels) in partitions.items():
+        datasets[name] = {
+            "cpu": TimeSeriesDataset(partition_features, cpu_labels),
+            "ram": TimeSeriesDataset(partition_features, ram_labels),
+        }
+
+    loaders = {
+        name: {
+            target: DataLoader(
+                dataset,
+                batch_size=BATCH_SIZE,
+                shuffle=(name == "train"),
+            )
+            for target, dataset in targets.items()
+        }
+        for name, targets in datasets.items()
+    }
+    return loaders, datasets, scaler, {
+        "train_rows": train_end,
+        "validation_rows": validation_end - validation_start,
+        "test_rows": total_rows - test_start,
+        "embargo_rows": FORECAST_HORIZON_SAMPLES,
+    }
+
+
+def _load_rf_metrics():
+    defaults = {"mae": float("nan"), "rmse": float("nan"), "r2": float("nan")}
+    metadata_path = os.path.join(MODELS_DIR, "model_metadata.pkl")
+    if not os.path.exists(metadata_path):
+        return defaults, defaults.copy()
+    metadata = joblib.load(metadata_path)
+    return (
+        metadata.get("cpu_metrics", defaults),
+        metadata.get("ram_metrics", defaults),
+    )
+
 
 def main():
     if not TORCH_AVAILABLE:
-        print("\n[ERROR] PyTorch is required. Install with: pip install torch")
-        sys.exit(1)
-
-    print("=" * 60)
-    print("   SysSense AI — Deep Learning Training Pipeline (LSTM)")
-    print("=" * 60)
-
-    # ── Step 1: Load and preprocess data ──────────────────────────────
-    df = load_data(prefer_public=True)
-    if df is None or len(df) < 100:
-        print("[!] Not enough data for LSTM training.")
+        print("[ERROR] PyTorch is required. Install it with: pip install torch")
         return
 
-    feat = engineer_features(df)
-    if len(feat) < 50:
-        print("[!] Not enough rows after feature engineering.")
+    torch.manual_seed(RANDOM_SEED)
+    np.random.seed(RANDOM_SEED)
+    print("=" * 60)
+    print("SysSense AI - LSTM Training (dataset source, live-compatible inputs)")
+    print("=" * 60)
+
+    frame = load_data(prefer_public=True)
+    if frame is None or len(frame) < 100:
+        print("[ERROR] Not enough dataset rows for LSTM training.")
         return
+    feature_frame = engineer_features(frame)
+    features = feature_frame[COLLECTOR_FEATURE_NAMES].values
+    labels_cpu = feature_frame["label_cpu_30s"].values
+    labels_ram = feature_frame["label_ram_30s"].values
 
-    # Separate features and labels
-    feature_cols = [c for c in feat.columns if not c.startswith("label_")]
-    label_cpu = "label_cpu_30s"
-    label_ram = "label_ram_30s"
-
-    features = feat[feature_cols].values
-    labels_cpu = feat[label_cpu].values
-    labels_ram = feat[label_ram].values
-
-    # ── Step 2: Normalize features ────────────────────────────────────
-    from sklearn.preprocessing import StandardScaler
-
-    # Chronological split BEFORE scaling (prevent data leakage)
-    split_idx = int(len(features) * 0.8)
-
-    scaler = StandardScaler()
-    train_features = scaler.fit_transform(features[:split_idx])
-    test_features = scaler.transform(features[split_idx:])
-
-    train_cpu = labels_cpu[:split_idx]
-    test_cpu = labels_cpu[split_idx:]
-    train_ram = labels_ram[:split_idx]
-    test_ram = labels_ram[split_idx:]
-
-    print(f"\nTrain: {len(train_features)} rows | Test: {len(test_features)} rows")
-    print(f"Features: {len(feature_cols)} | Window size: {WINDOW_SIZE}")
-
-    input_size = len(feature_cols)
-
-    # ── Step 3: Create datasets and loaders ───────────────────────────
-    cpu_train_ds = TimeSeriesDataset(train_features, train_cpu, WINDOW_SIZE)
-    cpu_test_ds = TimeSeriesDataset(test_features, test_cpu, WINDOW_SIZE)
-    ram_train_ds = TimeSeriesDataset(train_features, train_ram, WINDOW_SIZE)
-    ram_test_ds = TimeSeriesDataset(test_features, test_ram, WINDOW_SIZE)
-
-    cpu_train_loader = DataLoader(cpu_train_ds, batch_size=BATCH_SIZE, shuffle=True)
-    cpu_test_loader = DataLoader(cpu_test_ds, batch_size=BATCH_SIZE)
-    ram_train_loader = DataLoader(ram_train_ds, batch_size=BATCH_SIZE, shuffle=True)
-    ram_test_loader = DataLoader(ram_test_ds, batch_size=BATCH_SIZE)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # ── Step 4: Train CPU LSTM ────────────────────────────────────────
-    cpu_model = train_lstm(cpu_train_loader, cpu_test_loader, input_size, "CPU")
-
-    # ── Step 5: Train RAM LSTM ────────────────────────────────────────
-    ram_model = train_lstm(ram_train_loader, ram_test_loader, input_size, "RAM")
-
-    # ── Step 6: Evaluate all models ───────────────────────────────────
-    print(f"\n{'='*55}")
-    print("  Evaluation Results — Model Comparison")
-    print(f"{'='*55}")
-
-    # LSTM predictions
-    cpu_preds, cpu_actuals = evaluate_lstm(cpu_model, cpu_test_loader, device)
-    ram_preds, ram_actuals = evaluate_lstm(ram_model, ram_test_loader, device)
-
-    print("\nLSTM (Deep Learning):")
-    cpu_lstm_metrics = compute_metrics(cpu_actuals, cpu_preds, "CPU")
-    ram_lstm_metrics = compute_metrics(ram_actuals, ram_preds, "RAM")
-
-    # Naive baseline (predict current = future)
-    # For windowed data, current value is the last value in each window
-    cpu_idx = 0  # cpu_current is first feature
-    ram_idx = feature_cols.index("ram_current")
-
-    naive_cpu_preds = np.array([
-        cpu_test_ds.X[i, -1, cpu_idx].item() for i in range(len(cpu_test_ds))
-    ])
-    naive_ram_preds = np.array([
-        ram_test_ds.X[i, -1, ram_idx].item() for i in range(len(ram_test_ds))
-    ])
-
-    # Naive predictions are on scaled data, inverse-transform them
-    naive_cpu_unscaled = naive_cpu_preds * scaler.scale_[cpu_idx] + scaler.mean_[cpu_idx]
-    naive_ram_unscaled = naive_ram_preds * scaler.scale_[ram_idx] + scaler.mean_[ram_idx]
-
-    print("\nNaive Baseline (predicted = current):")
-    cpu_naive_metrics = compute_metrics(cpu_actuals, naive_cpu_unscaled, "CPU")
-    ram_naive_metrics = compute_metrics(ram_actuals, naive_ram_unscaled, "RAM")
-
-    # Load Random Forest metrics for comparison
-    cpu_rf_metrics = {"mae": 0, "rmse": 0, "r2": 0}
-    ram_rf_metrics = {"mae": 0, "rmse": 0, "r2": 0}
-    try:
-        meta_path = os.path.join(MODELS_DIR, "model_metadata.pkl")
-        if os.path.exists(meta_path):
-            meta = joblib.load(meta_path)
-            rf_cpu = meta.get("cpu_metrics", {})
-            rf_ram = meta.get("ram_metrics", {})
-            cpu_rf_metrics = {
-                "mae": round(rf_cpu.get("mae", 0), 4),
-                "rmse": round(rf_cpu.get("rmse", 0), 4),
-                "r2": round(rf_cpu.get("r2", 0), 4),
-            }
-            ram_rf_metrics = {
-                "mae": round(rf_ram.get("mae", 0), 4),
-                "rmse": round(rf_ram.get("rmse", 0), 4),
-                "r2": round(rf_ram.get("r2", 0), 4),
-            }
-            print("\nRandom Forest (from saved metadata):")
-            print(f"  CPU      -> MAE: {cpu_rf_metrics['mae']} | "
-                  f"RMSE: {cpu_rf_metrics['rmse']} | R2: {cpu_rf_metrics['r2']}")
-            print(f"  RAM      -> MAE: {ram_rf_metrics['mae']} | "
-                  f"RMSE: {ram_rf_metrics['rmse']} | R2: {ram_rf_metrics['r2']}")
-    except Exception as e:
-        print(f"\n[WARN] Could not load RF metrics: {e}")
-
-    # ── Step 7: Save LSTM models ──────────────────────────────────────
-    os.makedirs(MODELS_DIR, exist_ok=True)
-
-    cpu_model_path = os.path.join(MODELS_DIR, "lstm_cpu_model.pth")
-    ram_model_path = os.path.join(MODELS_DIR, "lstm_ram_model.pth")
-    scaler_path = os.path.join(MODELS_DIR, "lstm_scaler.pkl")
-    meta_save_path = os.path.join(MODELS_DIR, "lstm_metadata.pkl")
-
-    torch.save({
-        "model_state_dict": cpu_model.state_dict(),
-        "input_size": input_size,
-        "hidden1": HIDDEN_SIZE_1,
-        "hidden2": HIDDEN_SIZE_2,
-        "dense_size": DENSE_SIZE,
-        "dropout": DROPOUT,
-    }, cpu_model_path)
-
-    torch.save({
-        "model_state_dict": ram_model.state_dict(),
-        "input_size": input_size,
-        "hidden1": HIDDEN_SIZE_1,
-        "hidden2": HIDDEN_SIZE_2,
-        "dense_size": DENSE_SIZE,
-        "dropout": DROPOUT,
-    }, ram_model_path)
-
-    joblib.dump(scaler, scaler_path)
-    joblib.dump({
-        "feature_names": feature_cols,
-        "window_size": WINDOW_SIZE,
-        "input_size": input_size,
-        "cpu_metrics": cpu_lstm_metrics,
-        "ram_metrics": ram_lstm_metrics,
-        "trained_on": "kaggle_it_system_performance",
-    }, meta_save_path)
-
-    print(f"\n[OK] LSTM CPU model saved to {cpu_model_path}")
-    print(f"[OK] LSTM RAM model saved to {ram_model_path}")
-    print(f"[OK] Scaler saved to {scaler_path}")
-    print(f"[OK] Metadata saved to {meta_save_path}")
-
-    # ── Step 8: Generate comparison report ────────────────────────────
-    generate_dl_report(
-        cpu_lstm_metrics, cpu_rf_metrics, cpu_naive_metrics,
-        ram_lstm_metrics, ram_rf_metrics, ram_naive_metrics,
+    loaders, datasets, scaler, split_info = _make_loaders(features, labels_cpu, labels_ram)
+    print(
+        f"Train {split_info['train_rows']} | validation {split_info['validation_rows']} | "
+        f"test {split_info['test_rows']} | embargo {split_info['embargo_rows']}"
     )
 
-    print(f"\n{'='*60}")
-    print("  LSTM training complete!")
-    print("  Both ML (Random Forest) and DL (LSTM) models are now available.")
-    print(f"{'='*60}")
+    input_size = len(COLLECTOR_FEATURE_NAMES)
+    cpu_model = train_lstm(loaders["train"]["cpu"], loaders["validation"]["cpu"], input_size, "CPU")
+    ram_model = train_lstm(loaders["train"]["ram"], loaders["validation"]["ram"], input_size, "RAM")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    cpu_predictions, cpu_actuals = evaluate_lstm(cpu_model, loaders["test"]["cpu"], device)
+    ram_predictions, ram_actuals = evaluate_lstm(ram_model, loaders["test"]["ram"], device)
+    cpu_metrics = compute_metrics(cpu_actuals, cpu_predictions)
+    ram_metrics = compute_metrics(ram_actuals, ram_predictions)
+
+    cpu_index = COLLECTOR_FEATURE_NAMES.index("cpu_current")
+    ram_index = COLLECTOR_FEATURE_NAMES.index("ram_current")
+    cpu_naive_scaled = datasets["test"]["cpu"].X[:, -1, cpu_index].numpy()
+    ram_naive_scaled = datasets["test"]["ram"].X[:, -1, ram_index].numpy()
+    cpu_naive = cpu_naive_scaled * scaler.scale_[cpu_index] + scaler.mean_[cpu_index]
+    ram_naive = ram_naive_scaled * scaler.scale_[ram_index] + scaler.mean_[ram_index]
+    cpu_naive_metrics = compute_metrics(cpu_actuals, cpu_naive)
+    ram_naive_metrics = compute_metrics(ram_actuals, ram_naive)
+
+    print("\nFinal held-out metrics:")
+    print(f"  LSTM CPU: {_format_metrics(cpu_metrics)}")
+    print(f"  LSTM RAM: {_format_metrics(ram_metrics)}")
+    print(f"  Persistence CPU: {_format_metrics(cpu_naive_metrics)}")
+    print(f"  Persistence RAM: {_format_metrics(ram_naive_metrics)}")
+
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    cpu_path = os.path.join(MODELS_DIR, "lstm_cpu_model.pth")
+    ram_path = os.path.join(MODELS_DIR, "lstm_ram_model.pth")
+    scaler_path = os.path.join(MODELS_DIR, "lstm_scaler.pkl")
+    metadata_path = os.path.join(MODELS_DIR, "lstm_metadata.pkl")
+    checkpoint = {
+        "input_size": input_size,
+        "hidden1": HIDDEN_SIZE_1,
+        "hidden2": HIDDEN_SIZE_2,
+        "dense_size": DENSE_SIZE,
+        "dropout": DROPOUT,
+    }
+    torch.save({"model_state_dict": cpu_model.state_dict(), **checkpoint}, cpu_path)
+    torch.save({"model_state_dict": ram_model.state_dict(), **checkpoint}, ram_path)
+    joblib.dump(scaler, scaler_path)
+    joblib.dump({
+        "feature_names": list(COLLECTOR_FEATURE_NAMES),
+        "feature_profile": get_feature_contract()["profile"],
+        "feature_contract": get_feature_contract(),
+        "window_size": WINDOW_SIZE,
+        "input_size": input_size,
+        "cpu_metrics": cpu_metrics,
+        "ram_metrics": ram_metrics,
+        "naive_cpu_metrics": cpu_naive_metrics,
+        "naive_ram_metrics": ram_naive_metrics,
+        "split_info": split_info,
+        "split_strategy": "chronological_70_10_20_with_6_sample_embargo",
+        "trained_on": "kaggle_it_system_performance",
+    }, metadata_path)
+
+    rf_cpu, rf_ram = _load_rf_metrics()
+    generate_dl_report(
+        cpu_metrics, rf_cpu, cpu_naive_metrics,
+        ram_metrics, rf_ram, ram_naive_metrics,
+    )
+    print("[OK] LSTM models, scaler, metadata, and report saved.")
 
 
 if __name__ == "__main__":
